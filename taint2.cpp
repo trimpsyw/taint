@@ -1,41 +1,10 @@
 /* **********************************************************
- * Copyright (c) 2003-2008 VMware, Inc.  All rights reserved.
+ * Copyright (c) 2013 YAO Wei.  All rights reserved.
  * **********************************************************/
 
-/*
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- * 
- * * Redistributions of source code must retain the above copyright notice,
- *   this list of conditions and the following disclaimer.
- * 
- * * Redistributions in binary form must reproduce the above copyright notice,
- *   this list of conditions and the following disclaimer in the documentation
- *   and/or other materials provided with the distribution.
- * 
- * * Neither the name of VMware, Inc. nor the names of its contributors may be
- *   used to endorse or promote products derived from this software without
- *   specific prior written permission.
- * 
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- * ARE DISCLAIMED. IN NO EVENT SHALL VMWARE, INC. OR CONTRIBUTORS BE LIABLE
- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
- * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
- * CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
- * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
- * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH
- * DAMAGE.
- */
 
-/* Code Manipulation API Sample:
- * bbsize.c
- *
- * Reports basic statistics on the sizes of all basic blocks in the
- * target application.  Illustrates how to preserve floating point
- * state in an event callback.
+/*Taint analysis 
+ * taint2.cpp
  */
 
 #include "dr_api.h"
@@ -64,7 +33,8 @@ const char* white_dll[] = {
 	"ntdll.dll", "kernel32.dll", "KERNELBASE.dll", "user32.dll", "msvcrt.dll",
 	"gdi32.dll", "shell32.dll",  "ole32.dll", "oleaut32.dll",
 	"comdlg32.dll","advapi32.dll", "imm32.dll", "rpcrt4.dll",
-	"secur32.dll", "usp10.dll", "shlwapi.dll", "comctl32.dll" 
+	"secur32.dll", "usp10.dll", "shlwapi.dll", "comctl32.dll",
+	"ws2_32.dll"
 };
 
 struct api_call_rule_t
@@ -827,15 +797,11 @@ event_basic_block(void *drcontext, void *tag, instrlist_t *bb,
 		taint_seed((app_pc)tag, drcontext, &mc);
 	}//*/
 
-	dr_fprintf(f, "\nin dr_basic_block(tag="PFX") %d %d esp is "PFX"\n", 
-			tag, for_trace, translating, mc.esp);
-
 	for (instr = instrlist_first(bb); instr != NULL; instr = instr_get_next(instr))
 		instr_count_of_block++;
 
-	//if((instr = instrlist_first(bb)) != NULL)
-	//	dr_insert_clean_call(drcontext, bb, instr, taint_myseed, false, 1, 
-	//		OPND_CREATE_INTPTR(instr_get_app_pc(instr)));
+	dr_fprintf(f, "\nin dr_basic_block(tag="PFX") %d %d esp is "PFX" instr_count=%d\n", 
+			tag, for_trace, translating, mc.esp, instr_count_of_block);
 
 	for (instr = instrlist_first(bb); instr != NULL; instr = next_instr) {
 		next_instr = instr_get_next(instr);
@@ -915,7 +881,7 @@ event_thread_init(void *drcontext)
         DR_ASSERT(dirsep > logname);
     len = dr_snprintf(dirsep + 1,
                       (sizeof(logname)-(dirsep-logname))/sizeof(logname[0]) - 1,
-                      "instrs-%4x.log", /*dr_get_thread_id(drcontext)*/0xffff);
+                      "instrs-%4x.log", dr_get_thread_id(drcontext)/*0xffff*/);
     DR_ASSERT(len > 0);
     logname[sizeof(logname)/sizeof(logname[0])-1] = '\0';
     f = dr_open_file(logname, DR_FILE_WRITE_OVERWRITE);

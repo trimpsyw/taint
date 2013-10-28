@@ -60,6 +60,13 @@
 # define IF_WINDOWS(x) /* nothing */
 #endif
 
+const char* white_dll[] = {
+	"ntdll.dll", "kernel32.dll", "KERNELBASE.dll", "user32.dll", "msvcrt.dll",
+	"gdi32.dll", "shell32.dll",  "ole32.dll", "oleaut32.dll",
+	"comdlg32.dll","advapi32.dll", "imm32.dll", "rpcrt4.dll",
+	"secur32.dll", "usp10.dll", "shlwapi.dll", "comctl32.dll" 
+};
+
 struct api_call_rule_t
 {
 	char module[64];
@@ -137,7 +144,7 @@ public:
 	}
 };
 
-class taint_list {
+class memory_list {
 public:
 	typedef range range_type;
 	typedef std::vector<range_type> list_type;
@@ -221,10 +228,10 @@ public:
 		this->_ranges.clear();
 	}
 
-	taint_list() {}
+	memory_list() {}
 };
 
-static int tain_seed = 0;
+static int untrusted_function_calling = 0;
 static app_pc call_address, return_address;
 static int buffer_idx;
 static int size_id;
@@ -234,7 +241,7 @@ static app_pc read_size_offset;
 static app_pc read_buffer;
 static int read_size;
 
-static taint_list taint_memory;
+static memory_list taint_memory;
 static byte taint_regs[DR_REG_INVALID];
 
 typedef std::vector<std::string> function_tables;
@@ -242,6 +249,16 @@ static function_tables funcs;
 static int enter_function;
 static int leave_function;
 static std::string this_function;
+static memory_list skip_list;
+
+
+static bool
+within_whitelist(app_pc pc)
+{
+	if(skip_list.size() && skip_list.find(pc))
+		return true;		
+	return false;
+}
 
 static void
 print_function_tables(file_t f, const char* msg)
@@ -342,23 +359,23 @@ print_instr(void* drcontext, file_t f, instr_t* instr, app_pc pc)
 
 # define MAX_SYM_RESULT 256
 static int
-print_address(file_t f, app_pc addr, const char *prefix, char* name = NULL, int size = 0)
+print_address(file_t f, app_pc addr, const char *prefix, char* function = NULL, int size = 0)
 {
     drsym_info_t sym;
-    char name1[MAX_SYM_RESULT];
+    char name[MAX_SYM_RESULT];
     char file[MAXIMUM_PATH];
 	module_data_t *data;
-	char* name0 = (name == NULL) ? name1 : name;
+	function = (function == NULL) ? name : function;
 	size = (size == 0) ? MAX_SYM_RESULT : size;
 
     data = dr_lookup_module(addr);
     if (data == NULL) {
         dr_fprintf(f, "%s "PFX" ? ??:0\n", prefix, addr);
-		strcpy(name0, "undefined");
+		strcpy(function, "unknown");
         return 0;
     }
     sym.struct_size = sizeof(sym);
-    sym.name = name0;
+    sym.name = function;
     sym.name_size = size;
     sym.file = file;
     sym.file_size = MAXIMUM_PATH;
@@ -367,11 +384,12 @@ print_address(file_t f, app_pc addr, const char *prefix, char* name = NULL, int 
 	drsym_error_t symres;
     symres = drsym_lookup_address(data->full_path, addr - data->start, &sym,
                                 DRSYM_DEFAULT_FLAGS);
+
+    const char *modname = dr_module_preferred_name(data);
+    if (modname == NULL)
+        modname = "<noname>";
     
 	if (symres == DRSYM_SUCCESS || symres == DRSYM_ERROR_LINE_NOT_AVAILABLE) {
-        const char *modname = dr_module_preferred_name(data);
-        if (modname == NULL)
-            modname = "<noname>";	
 
         dr_fprintf(f, "%s "PFX" %s:%s", prefix, addr, modname, sym.name);
 
@@ -382,8 +400,8 @@ print_address(file_t f, app_pc addr, const char *prefix, char* name = NULL, int 
                        sym.file, sym.line, sym.line_offs);
         }
 	} else {
-		strcpy(name0, "undefined");
-        dr_fprintf(f, "%s "PFX" ? ??:0\n", prefix, addr);
+		sprintf(function, "%x", addr);
+		dr_fprintf(f, "%s "PFX" %s:%s ??:0\n", prefix, addr, modname, function);
 	}
 #endif
 
@@ -395,32 +413,39 @@ static int lookup_syms(app_pc addr, char* module, char *function, int size)
 {
 	drsym_error_t symres;
 	drsym_info_t sym;
-    char name[MAX_SYM_RESULT];
     char file[MAXIMUM_PATH];
 	module_data_t *data;
 
 	data = dr_lookup_module(addr);
     if (data == NULL) 
+	{
+		strcpy(module, "<nomodule>");
+		sprintf(function, "<noname>", addr); 
 		return -1;
+	}
 
 	sym.struct_size = sizeof(sym);
-    sym.name = name;
-    sym.name_size = MAX_SYM_RESULT;
+    sym.name = function;
+    sym.name_size = size;
     sym.file = file;
     sym.file_size = MAXIMUM_PATH;
 
 #ifdef DISABLE_CONSOLE
+	const char *modname = dr_module_preferred_name(data);
+    if (modname == NULL)
+        modname = "<noname>";	
+	
 	symres = drsym_lookup_address(data->full_path, addr - data->start, &sym,
                                 DRSYM_DEFAULT_FLAGS);
-
+	
 	if (symres == DRSYM_SUCCESS || symres == DRSYM_ERROR_LINE_NOT_AVAILABLE) {
-		const char *modname = dr_module_preferred_name(data);
-        if (modname == NULL)
-            modname = "<noname>";	
-		
 		strncpy(module, modname, size);
 		strncpy(function, sym.name, size);
-    } 
+	} else {
+		strncpy(module, modname, size);
+		sprintf(function, "%x", addr); 
+	}
+			
 #endif
 	dr_free_module_data(data);
 
@@ -471,7 +496,8 @@ taint_alert(instr_t* instr, app_pc target_addr, void* drcontext, dr_mcontext_t *
 		else
 			dr_snprintf(msg, sizeof(msg), "Calling tainted reg %d $%08x\n", taint_reg, target_addr);
 
-		DISPLAY_STRING(msg);
+		//DISPLAY_STRING(msg);
+		dr_fprintf(f, msg);
 	}
 
 	return is_taint;
@@ -480,7 +506,9 @@ taint_alert(instr_t* instr, app_pc target_addr, void* drcontext, dr_mcontext_t *
 static void
 at_call(app_pc instr_addr, app_pc target_addr)
 {
-    void* drcontext = dr_get_current_drcontext();
+	if(untrusted_function_calling) return;
+
+	void* drcontext = dr_get_current_drcontext();
 	file_t f = (file_t)(ptr_uint_t) dr_get_tls_field(drcontext);
     dr_mcontext_t mc = {sizeof(mc),DR_MC_ALL};
     dr_get_mcontext(drcontext, &mc);
@@ -507,12 +535,10 @@ at_call(app_pc instr_addr, app_pc target_addr)
 	enter_function = 1;
 	leave_function = 0;
 
-	if(tain_seed == 0){
-
-#ifdef DISABLE_CONSOLE
+	if(untrusted_function_calling == 0){
 		for(int j = 0; j < sizeof(rules)/sizeof(struct api_call_rule_t); j++){
 			if(_stricmp(func, rules[j].name) == 0 ){
-				tain_seed = 1;
+				untrusted_function_calling = 1;
 				call_address = instr_addr;
 				return_address = instr_addr + length;
 				buffer_idx = rules[j].buffer_id;
@@ -527,29 +553,7 @@ at_call(app_pc instr_addr, app_pc target_addr)
 				break;
 			}
 		}
-#else
-		if(instr_addr == (app_pc)0x00401034){
-			tain_seed = 1;
-			call_address = instr_addr;
-			return_address = instr_addr + length;
-			buffer_idx = rules[0].buffer_id;
-			size_id = rules[0].size_id;
-			read_size_id = rules[0].read_size_id;
-			read_size_ref = rules[0].read_size_is_reference;
-			dr_fprintf(f, "Catch U!!! "PFX"--->"PFX "\n", instr_addr, target_addr);
-				
-		} else if(instr_addr == (app_pc)0x00401057){
-			tain_seed = 1;
-			call_address = instr_addr;
-			return_address = instr_addr + length;
-			buffer_idx = rules[1].buffer_id;
-			size_id = rules[1].size_id;
-			read_size_id = rules[1].read_size_id;
-			read_size_ref = rules[1].read_size_is_reference;
-			dr_fprintf(f, "Catch U!!! "PFX"--->"PFX "\n", instr_addr, target_addr);
-		}
-#endif
-		if(tain_seed){
+		if(untrusted_function_calling){
 			app_pc boffset, soffset;
 			dr_mcontext_t mc = {sizeof(mc),DR_MC_ALL};
 			size_t size;
@@ -563,11 +567,16 @@ at_call(app_pc instr_addr, app_pc target_addr)
 			dr_fprintf(f, "Buffer address "PFX"\n", read_buffer);
 
 			dr_safe_read(soffset, 4, &read_size, &size);
-			dr_fprintf(f, "Size value "PFX"\n", read_size);
-		} else {
+			dr_fprintf(f, "Buffer size "PFX"\n", read_size);
+		} 
+	}
+
+	if(untrusted_function_calling == 0)
+	{
+		if(!within_whitelist(target_addr)){
 			print_function_tables(f, "Now in");
-			funcs.push_back(func);
-			print_function_tables(f, "Call into");
+			funcs.push_back(this_function);
+			print_function_tables(f, "Calling");
 		}
 	}
 }
@@ -575,7 +584,9 @@ at_call(app_pc instr_addr, app_pc target_addr)
 static void
 at_return(app_pc instr_addr, app_pc target_addr)
 {
-    file_t f = (file_t)(ptr_uint_t) dr_get_tls_field(dr_get_current_drcontext());
+	if(untrusted_function_calling) return;
+
+	file_t f = (file_t)(ptr_uint_t) dr_get_tls_field(dr_get_current_drcontext());
 
 	char funcname[MAX_SYM_RESULT];
     int t = print_address(f, instr_addr, "[RETURN @ ]", funcname, MAX_SYM_RESULT);
@@ -585,10 +596,15 @@ at_return(app_pc instr_addr, app_pc target_addr)
 	leave_function = 1;
 	enter_function = 0;
 
-	if(tain_seed == 0){
-		print_function_tables(f, "Now in");
-		funcs.pop_back();
-		print_function_tables(f, "Return");
+	if(untrusted_function_calling == 0)
+	{
+		print_function_tables(f, "Leaving");
+		//if(_stricmp(funcs.back().c_str(), funcname) != 0)
+		//	dr_fprintf(f, "yw: %s %s\n", funcs.back().c_str(), funcname);
+		{
+			funcs.pop_back();
+			print_function_tables(f, "Return");
+		}
 	}
 }
 
@@ -596,7 +612,9 @@ at_return(app_pc instr_addr, app_pc target_addr)
 static void
 at_jmp(app_pc instr_addr, app_pc target_addr)
 {
-    file_t f = (file_t)(ptr_uint_t) dr_get_tls_field(dr_get_current_drcontext());
+	if(untrusted_function_calling) return;
+
+	file_t f = (file_t)(ptr_uint_t) dr_get_tls_field(dr_get_current_drcontext());
     print_address(f, instr_addr, "JMP @ ");
     print_address(f, target_addr, "\tInto ");
 }
@@ -604,11 +622,11 @@ at_jmp(app_pc instr_addr, app_pc target_addr)
 static void 
 at_others(app_pc pc)
 {
+	if(untrusted_function_calling) return;
+
 	void* drcontext = dr_get_current_drcontext();
 	file_t f = (file_t)(ptr_uint_t) dr_get_tls_field(drcontext);
-    //dr_mcontext_t mc = {sizeof(mc),DR_MC_ALL};
-    //dr_get_mcontext(drcontext, &mc);
-
+    
 	instr_t instr;
 	instr_init(drcontext, &instr);
 	instr_reuse(drcontext, &instr);
@@ -623,6 +641,8 @@ at_others(app_pc pc)
 static void 
 taint_propagation(app_pc pc)
 {
+	if(untrusted_function_calling) return;
+
 	void* drcontext = dr_get_current_drcontext();
 	file_t f = (file_t)(ptr_uint_t) dr_get_tls_field(drcontext);
     dr_mcontext_t mc = {sizeof(mc),DR_MC_ALL};
@@ -748,6 +768,41 @@ taint_propagation(app_pc pc)
 	instr_free(drcontext, &instr);
 }
 
+static void 
+taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
+{
+	if(untrusted_function_calling == 0 || return_address != pc)	return;
+	
+	file_t f = (file_t)dr_get_tls_field(drcontext);
+	
+	//在返回地址处处理函数调用结果
+	app_pc value;
+	size_t size;
+
+	dr_fprintf(f, "Function return status "PFX "\n",mc->eax);
+
+	if(read_size_id >= 0)
+	{
+		if(read_size_id == 0)
+			value = (app_pc)mc->eax;
+		else
+			dr_safe_read(read_size_offset, 4, &value, &size);
+
+		if(read_size_ref)
+			dr_safe_read(value, 4, &value, &size);
+		
+		read_size = (int)value;
+	}
+
+	if(mc->eax)
+	{
+		dr_fprintf(f, "Read Size "PFX"\n", read_size);
+		taint_memory.insert_sort(range(read_buffer, read_buffer+read_size-1));
+	}
+
+	untrusted_function_calling = 0;
+}
+
 static dr_emit_flags_t
 event_basic_block(void *drcontext, void *tag, instrlist_t *bb,
                   bool for_trace, bool translating)
@@ -759,60 +814,33 @@ event_basic_block(void *drcontext, void *tag, instrlist_t *bb,
 	bool is_return = return_address == (app_pc)tag;
 	dr_get_mcontext(drcontext, &mc);
 
-	if(tain_seed && !is_return)//如果已经开始检测到函数调用，则直接该函数内部的一切细节
-	{
-		dr_fprintf(f, "\ntaint seed in dr_basic_block(tag="PFX")\n", tag);
+	//跳过白名单
+	if(within_whitelist((app_pc)tag))
 		return DR_EMIT_DEFAULT;
-	}
 
-	/*{
-		module_data_t *data;
-		data = dr_lookup_module((byte*)tag);
-		if(data && _stricmp(data->names.file_name, dr_get_application_name()) != 0)
+	//检测到过滤函数调用
+	if(untrusted_function_calling)
+	{
+		if(!is_return) //准备调用该函数了，直接该函数内部的一切细节
 			return DR_EMIT_DEFAULT;
+
+		taint_seed((app_pc)tag, drcontext, &mc);
 	}//*/
 
-
 	dr_fprintf(f, "\nin dr_basic_block(tag="PFX") %d %d esp is "PFX"\n", 
-		tag, for_trace, translating, mc.esp);
-
-	if(tain_seed && is_return)//在返回地址处处理函数调用结果
-	{
-		app_pc value;
-		size_t size;
-
-		dr_fprintf(f, "Function return "PFX "\n",mc.eax);
-
-		if(read_size_id >= 0)
-		{
-			if(read_size_id == 0)
-				value = (app_pc)mc.eax;
-			else
-				dr_safe_read(read_size_offset, 4, &value, &size);
-
-			if(read_size_ref)
-				dr_safe_read(value, 4, &value, &size);
-			
-			read_size = (int)value;
-		}
-
-		if(mc.eax)
-		{
-			dr_fprintf(f, "Read Size "PFX"\n", read_size);
-			taint_memory.insert_sort(range(read_buffer, read_buffer+read_size-1));
-		}
-
-		tain_seed = 0;
-	}
+			tag, for_trace, translating, mc.esp);
 
 	for (instr = instrlist_first(bb); instr != NULL; instr = instr_get_next(instr))
 		instr_count_of_block++;
 
+	//if((instr = instrlist_first(bb)) != NULL)
+	//	dr_insert_clean_call(drcontext, bb, instr, taint_myseed, false, 1, 
+	//		OPND_CREATE_INTPTR(instr_get_app_pc(instr)));
+
 	for (instr = instrlist_first(bb); instr != NULL; instr = next_instr) {
 		next_instr = instr_get_next(instr);
         
-		if (!instr_opcode_valid(instr))
-            continue;
+		if (!instr_opcode_valid(instr))	continue;
 		//dr_print_instr(drcontext, f, instr, NULL);
 
 		 /* instrument calls and returns  */
@@ -833,12 +861,11 @@ event_basic_block(void *drcontext, void *tag, instrlist_t *bb,
 			dr_insert_clean_call(drcontext, bb, instr, taint_propagation, false, 1, 
 				OPND_CREATE_INTPTR(instr_get_app_pc(instr)));
 		} else {
-			if(instr_count_of_block < 50)
+			if(instr_count_of_block < 100)
 				dr_insert_clean_call(drcontext, bb, instr, at_others, false, 1, 
 					OPND_CREATE_INTPTR(instr_get_app_pc(instr)));
 		}
     }
-
 
     //dr_mutex_lock(stats_mutex);
     //dr_mutex_unlock(stats_mutex);
@@ -855,6 +882,17 @@ event_module_load(void *drcontext, const module_data_t *info, bool loaded)
 			dr_get_application_name(), info->full_path, info->names.file_name, info->names.exe_name, 
 			info->names.module_name, info->names.rsrc_name,
 			info->start, info->end);
+	}
+
+	for(int i = 0; i < sizeof(white_dll)/sizeof(white_dll[0]); i++)
+	{
+		if(info->names.module_name &&
+			_stricmp(white_dll[i], info->names.module_name) == 0)
+		{
+			dr_fprintf(module_log, "whitelist module %s\n", info->names.module_name);
+			skip_list.insert_sort(range(info->start, info->end));
+			break;
+		}
 	}
 }
 
@@ -877,7 +915,7 @@ event_thread_init(void *drcontext)
         DR_ASSERT(dirsep > logname);
     len = dr_snprintf(dirsep + 1,
                       (sizeof(logname)-(dirsep-logname))/sizeof(logname[0]) - 1,
-                      "instrcalls.%4x.log", /*dr_get_thread_id(drcontext)*/0xffff);
+                      "instrs-%4x.log", /*dr_get_thread_id(drcontext)*/0xffff);
     DR_ASSERT(len > 0);
     logname[sizeof(logname)/sizeof(logname[0])-1] = '\0';
     f = dr_open_file(logname, DR_FILE_WRITE_OVERWRITE);
@@ -896,7 +934,7 @@ event_thread_exit(void *drcontext)
 {
     file_t f = (file_t)(ptr_uint_t) dr_get_tls_field(drcontext);
 
-	for(taint_list::iterator it = taint_memory.begin();
+	for(memory_list::iterator it = taint_memory.begin();
 		it != taint_memory.end(); it++)
 		dr_fprintf(f, PFX"-"PFX"\n", it->start, it->end);
 

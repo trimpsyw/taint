@@ -771,11 +771,13 @@ event_basic_block(void *drcontext, void *tag, instrlist_t *bb,
                   bool for_trace, bool translating)
 {
     instr_t *instr, *next_instr;
+	static int block_cnt = 0;
 	int instr_count_of_block = 0;
 	file_t f = (file_t)(ptr_uint_t) dr_get_tls_field(drcontext);
 	dr_mcontext_t mc = {sizeof(mc),DR_MC_ALL};
 	bool is_return = return_address == (app_pc)tag;
 	dr_get_mcontext(drcontext, &mc);
+	block_cnt ++;
 
 	//Ìø¹ý°×Ãûµ¥
 	if(within_whitelist((app_pc)tag))
@@ -793,8 +795,8 @@ event_basic_block(void *drcontext, void *tag, instrlist_t *bb,
 	for (instr = instrlist_first(bb); instr != NULL; instr = instr_get_next(instr))
 		instr_count_of_block++;
 
-	dr_fprintf(f, "\nin dr_basic_block(tag="PFX") %d %d esp is "PFX" instr_count=%d\n", 
-			tag, for_trace, translating, mc.esp, instr_count_of_block);
+	dr_fprintf(f, "\nin dr_basic_block(tag="PFX") %d %d esp is "PFX" instr_count=%d/%d\n", 
+			tag, for_trace, translating, mc.esp, instr_count_of_block, block_cnt);
 
 	for (instr = instrlist_first(bb); instr != NULL; instr = next_instr) {
 		next_instr = instr_get_next(instr);

@@ -1,11 +1,12 @@
-tttt1.exe module_load event E:\Develop\DynamoRIO-Windows-4.1.0-8\tttt1.exe tttt1.exe tttt1.exe <NULL> <NULL> 0x00400000-0x00412000
-tttt1.exe module_load event   <NULL> drsyms.dll <NULL> 0x52f50000-0x52fb9000
-tttt1.exe module_load event E:\Develop\DynamoRIO-Windows-4.1.0-8\lib32\release\dynamorio.dll dynamorio.dll <NULL> dynamorio.dll dynamorio.dll 0x52fc0000-0x530fc000
-tttt1.exe module_load event E:\Develop\DynamoRIO-Windows-4.1.0-8\samples\bin32\taint2.dll taint2.dll <NULL> taint2.dll <NULL> 0x68b40000-0x68b59000
-tttt1.exe module_load event C:\Program Files\AVAST Software\Avast\snxhk.dll snxhk.dll <NULL> snxhk.dll snxhk.dll 0x6fc30000-0x6fc6c000
-tttt1.exe module_load event C:\Windows\system32\KERNELBASE.dll KERNELBASE.dll <NULL> KERNELBASE.dll Kernelbase 0x75600000-0x7564b000
+tttt0.exe module_load event E:\Develop\DynamoRIO-Windows-4.1.0-8\tttt0.exe tttt0.exe tttt0.exe <NULL> <NULL> 0x00400000-0x00405000
+tttt0.exe module_load event E:\Develop\DynamoRIO-Windows-4.1.0-8\lib32\release\dynamorio.dll dynamorio.dll <NULL> dynamorio.dll dynamorio.dll 0x547c0000-0x548fc000
+tttt0.exe module_load event   <NULL> drsyms.dll <NULL> 0x597e0000-0x59849000
+tttt0.exe module_load event E:\Develop\DynamoRIO-Windows-4.1.0-8\samples\bin32\taint2.dll taint2.dll <NULL> taint2.dll <NULL> 0x67b30000-0x67b49000
+tttt0.exe module_load event C:\Program Files\AVAST Software\Avast\snxhk.dll snxhk.dll <NULL> snxhk.dll snxhk.dll 0x6fc30000-0x6fc6c000
+tttt0.exe module_load event C:\Windows\WinSxS\x86_microsoft.vc90.crt_1fc8b3b9a1e18e3b_9.0.30729.6161_none_50934f2ebcb7eb57\MSVCR90.dll MSVCR90.dll <NULL> MSVCR90.dll MSVCR90.DLL 0x732e0000-0x73383000
+tttt0.exe module_load event C:\Windows\system32\KERNELBASE.dll KERNELBASE.dll <NULL> KERNELBASE.dll Kernelbase 0x75600000-0x7564b000
 whitelist module KERNELBASE.dll
-tttt1.exe module_load event C:\Windows\system32\kernel32.dll kernel32.dll <NULL> KERNEL32.dll kernel32 0x775e0000-0x776b4000
+tttt0.exe module_load event C:\Windows\system32\kernel32.dll kernel32.dll <NULL> KERNEL32.dll kernel32 0x775e0000-0x776b4000
 whitelist module KERNEL32.dll
-tttt1.exe module_load event C:\Windows\SYSTEM32\ntdll.dll ntdll.dll <NULL> ntdll.dll ntdll.dll 0x77820000-0x7795c000
+tttt0.exe module_load event C:\Windows\SYSTEM32\ntdll.dll ntdll.dll <NULL> ntdll.dll ntdll.dll 0x77820000-0x7795c000
 whitelist module ntdll.dll

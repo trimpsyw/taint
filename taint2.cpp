@@ -8,9 +8,8 @@
  */
 
 #include "dr_api.h"
-#ifdef SHOW_SYMBOLS
 # include "drsyms.h"
-#endif
+
 #include <vector>
 #include <algorithm>
 #include <string>
@@ -34,6 +33,8 @@ const char* white_dll[] = {
 	"gdi32.dll", "shell32.dll",  "ole32.dll", "oleaut32.dll",
 	"comdlg32.dll","advapi32.dll", "imm32.dll", "rpcrt4.dll",
 	"secur32.dll", "usp10.dll", "shlwapi.dll", "comctl32.dll",
+	"UxTheme.dll", "VERSION.dll", "gdiplus.dll", "WINMM.dll", "LPK.dll",
+	"WindowsCodecs.dll", "MSCTF.dll", 
 	"ws2_32.dll"
 };
 
@@ -233,11 +234,13 @@ within_whitelist(app_pc pc)
 static void
 print_function_tables(file_t f, const char* msg)
 {
+#if 0
 	dr_fprintf(f, "%s ", msg);
 	for(function_tables::iterator it = funcs.begin();
 		it != funcs.end(); it++)
 		dr_fprintf(f, "%s:", it->c_str());
 	dr_fprintf(f, "\n");
+#endif
 }
 
 static void *stats_mutex; /* for multithread support */
@@ -274,15 +277,10 @@ dr_init(client_id_t id)
     dr_register_thread_init_event(event_thread_init);
     dr_register_thread_exit_event(event_thread_exit);
 
-#ifdef SHOW_SYMBOLS
-#ifdef DISABLE_CONSOLE
     if (drsym_init(0) != DRSYM_SUCCESS) {
         dr_log(NULL, LOG_ALL, 1, "WARNING: unable to initialize symbol translation\n");
     }
-#endif
-#endif
 
-#ifdef SHOW_RESULTS
     if (dr_is_notify_on()) 
 	{
 # ifdef WINDOWS
@@ -291,7 +289,6 @@ dr_init(client_id_t id)
 # endif
         dr_fprintf(STDOUT, "Client bbsize is running\n");
     }
-#endif
 
 	char logname[512];
     char *dirsep;
@@ -350,7 +347,6 @@ print_address(file_t f, app_pc addr, const char *prefix, char* function = NULL, 
     sym.file = file;
     sym.file_size = MAXIMUM_PATH;
 
-#ifdef DISABLE_CONSOLE
 	drsym_error_t symres;
     symres = drsym_lookup_address(data->full_path, addr - data->start, &sym,
                                 DRSYM_DEFAULT_FLAGS);
@@ -373,7 +369,6 @@ print_address(file_t f, app_pc addr, const char *prefix, char* function = NULL, 
 		sprintf(function, "%x", addr);
 		dr_fprintf(f, "%s "PFX" %s:%s ??:0\n", prefix, addr, modname, function);
 	}
-#endif
 
     dr_free_module_data(data);
 	return 1;
@@ -400,7 +395,6 @@ static int lookup_syms(app_pc addr, char* module, char *function, int size)
     sym.file = file;
     sym.file_size = MAXIMUM_PATH;
 
-#ifdef DISABLE_CONSOLE
 	const char *modname = dr_module_preferred_name(data);
     if (modname == NULL)
         modname = "<noname>";	
@@ -416,7 +410,6 @@ static int lookup_syms(app_pc addr, char* module, char *function, int size)
 		sprintf(function, "%x", addr); 
 	}
 			
-#endif
 	dr_free_module_data(data);
 
 	return 0;

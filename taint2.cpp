@@ -14,17 +14,15 @@
 #include <algorithm>
 #include <string>
 
-#define DISABLE_CONSOLE
+//#define SHOW_INSTR
+//#define SHOW_PROPAGATION
+#define SHOW_FUNCTION_TREE
 
 #ifdef WINDOWS
 # define DISPLAY_STRING(msg) dr_messagebox(msg)
-#else
-# define DISPLAY_STRING(msg) dr_printf("%s\n", msg);
-#endif
-
-#ifdef WINDOWS
 # define IF_WINDOWS(x) x
 #else
+# define DISPLAY_STRING(msg) dr_printf("%s\n", msg);
 # define IF_WINDOWS(x) /* nothing */
 #endif
 
@@ -33,9 +31,12 @@ const char* white_dll[] = {
 	"gdi32.dll", "shell32.dll",  "ole32.dll", "oleaut32.dll",
 	"comdlg32.dll","advapi32.dll", "imm32.dll", "rpcrt4.dll",
 	"secur32.dll", "usp10.dll", "shlwapi.dll", "comctl32.dll",
-	"UxTheme.dll", "VERSION.dll", "gdiplus.dll", "WINMM.dll", "LPK.dll",
-	"WindowsCodecs.dll", "MSCTF.dll", 
-	"ws2_32.dll"
+	"UxTheme.dll", "gdiplus.dll", "WINMM.dll", "LPK.dll",
+	"WindowsCodecs.dll", "MSCTF.dll", "WinUsb.dll", "SETUPAPI.dll",
+	"NSI.dll", "sechost.dll", "DEVOBJ.dll", "CFGMGR32.dll",
+	"cryptbase.dll", "normaliz.dll", "version.dll",
+	"ws2_32.dll", "netapi32.dll"
+	"snxhk.dll", "sepro.dll", "360safemonpro.tpi"		//anti-virus
 };
 
 struct api_call_rule_t
@@ -201,6 +202,10 @@ public:
 		if(_ranges.size() == 0) return false;
 		return within(pc) != _ranges.end();
 	}
+
+	iterator at(app_pc pc){
+		return within(pc);
+	}
 	
 	iterator begin() {
 		return this->_ranges.begin();
@@ -264,7 +269,7 @@ within_whitelist(app_pc pc)
 static void
 print_function_tables(file_t f, const char* msg, function_tables& funcs)
 {
-#if 1
+#ifdef SHOW_FUNCTION_TREE
 	dr_fprintf(f, "%s ", msg);
 	for(function_tables::iterator it = funcs.begin();
 		it != funcs.end(); it++)
@@ -346,12 +351,14 @@ event_exit(void)
 static void
 print_instr(void* drcontext, file_t f, instr_t* instr, app_pc pc)
 {
+#ifdef SHOW_INSTR
 	int n1 = instr_num_srcs(instr);
 	int n2 = instr_num_dsts(instr);
 
 	dr_fprintf(f, PFX" ",  pc);
 	instr_disassemble(drcontext, instr, f);
 	dr_fprintf(f, "\t[%d, %d]\n",  n1, n2);
+#endif
 }
 
 # define MAX_SYM_RESULT 256
@@ -367,7 +374,7 @@ print_address(file_t f, app_pc addr, const char *prefix, char* function = NULL, 
 
     data = dr_lookup_module(addr);
     if (data == NULL) {
-        dr_fprintf(f, "%s "PFX" ? ??:0\n", prefix, addr);
+        dr_fprintf(f, "%s "PFX" unknown ??:0\n", prefix, addr);
 		strcpy(function, "unknown");
         return 0;
     }
@@ -654,12 +661,30 @@ at_jmp(app_pc instr_addr, app_pc target_addr)
 	if(untrusted_function_calling) return;
 
 	file_t f = data->f;
-    print_address(f, instr_addr, "JMP @ ");
-    print_address(f, target_addr, "\tInto ");
+
+	instr_t instr;
+	instr_init(drcontext, &instr);
+	instr_reuse(drcontext, &instr);
+	decode(drcontext, instr_addr, &instr);
+
+	print_instr(drcontext, f, &instr, instr_addr);
+	instr_free(drcontext, &instr);
+
+	char func1[MAX_SYM_RESULT], func2[MAX_SYM_RESULT];
+    print_address(f, instr_addr, "JMP @ ", func1, MAX_SYM_RESULT);
+    print_address(f, target_addr, "\tInto ", func2, MAX_SYM_RESULT);
+
+	/*if(!within_whitelist(target_addr)){
+	} else {
+		data->funcs.pop_back();
+	}*/
+	data->funcs.pop_back();
+	data->funcs.push_back(func2);
+	print_function_tables(f, "JmpTo\t", data->funcs);
 }
 
 static void 
-at_jmp_ind(app_pc pc)
+at_jmp_ind(app_pc instr_addr, app_pc target_addr)
 {
 	void* drcontext = dr_get_current_drcontext();
 	thread_data* data = (thread_data*)dr_get_tls_field(drcontext);
@@ -668,17 +693,21 @@ at_jmp_ind(app_pc pc)
 	if(untrusted_function_calling) return;
 
 	file_t f = data->f;
+	
 	instr_t instr;
-
 	instr_init(drcontext, &instr);
 	instr_reuse(drcontext, &instr);
-	decode(drcontext, pc, &instr);
+	decode(drcontext, instr_addr, &instr);
 
-	print_instr(drcontext, f, &instr, pc);
+	print_instr(drcontext, f, &instr, instr_addr);
 	instr_free(drcontext, &instr);
 
+	print_address(f, instr_addr, "JMP Ind @ ");
+    print_address(f, target_addr, "\tInto ");
+	
+	if(within_whitelist(target_addr)) 
 	{
-		//data->funcs.pop_back();
+		data->funcs.pop_back();
 		print_function_tables(f, "FixIt\t", data->funcs);
 	}
 }
@@ -734,7 +763,7 @@ taint_propagation(app_pc pc)
 	reg_t taint_reg = 0, tainting_reg = 0;
 	app_pc taint_addr = 0, tainting_addr = 0;
 
-#if 1
+#ifdef SHOW_PROPAGATION
 	//以下是打印源和目标数
 	if(n1 > 0) dr_fprintf(f, "src_opnd(");
 	for(int i = 0; i < n1; i++)
@@ -915,16 +944,16 @@ event_basic_block(void *drcontext, void *tag, instrlist_t *bb,
 	}//*/
 
 	for (instr = instrlist_first(bb); instr != NULL; instr = instr_get_next(instr))
+	{
+		//dr_print_instr(drcontext, f, instr, NULL);
 		instr_count++;
-
+	}
 	dr_fprintf(f, "\nin dr_basic_block #%d (tag="PFX") esp="PFX" instr_count=%d\n", 
 			block_cnt, tag, mc.esp, instr_count);
-
+	
 	for (instr = instrlist_first(bb); instr != NULL; instr =  instr_get_next(instr)) {
 		int opcode = instr_get_opcode(instr);
-		if(opcode == OP_INVALID)	continue;	
-		
-		//dr_print_instr(drcontext, f, instr, NULL);
+		if(opcode == OP_INVALID)	continue;
 
 		 /* instrument calls and returns  */
         if (instr_is_call_direct(instr)) {
@@ -936,8 +965,7 @@ event_basic_block(void *drcontext, void *tag, instrlist_t *bb,
         } else if (instr_is_ubr(instr)) {
             dr_insert_ubr_instrumentation(drcontext, bb, instr, (app_pc)at_jmp);	
 		} else if(opcode == OP_jmp_ind || opcode == OP_jmp_far_ind){
-			dr_insert_clean_call(drcontext, bb, instr, at_jmp_ind, false, 1, 
-				OPND_CREATE_INTPTR(instr_get_app_pc(instr)));
+			dr_insert_mbr_instrumentation(drcontext, bb, instr, at_jmp_ind, SPILL_SLOT_1);
 		} else if(instr_is_mov(instr) || opcode == OP_lea || opcode == OP_movsx ){
 			dr_insert_clean_call(drcontext, bb, instr, taint_propagation, false, 1, 
 				OPND_CREATE_INTPTR(instr_get_app_pc(instr)));

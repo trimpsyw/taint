@@ -126,7 +126,30 @@ public:
 private:
 	list_type _ranges;
 
-	const_iterator within(app_pc pc, const_iterator* which = NULL){
+	iterator within(app_pc pc, iterator* which = NULL){
+		iterator p = _ranges.begin();
+		iterator m = _ranges.end();
+		int num = _ranges.size();
+		app_pc s1, s2;
+
+		while(num > 0)
+		{
+			m = p + (num >> 1);
+			s1 = m->start;
+			s2 = m->end;
+
+			if(s1 <= pc && pc <= s2)
+				return m;
+
+			if(s1 > pc)		num >>= 1;
+			else			{p = m+1, num = (num-1) >> 1;}
+		}
+
+		if(which) *which = p;
+		return _ranges.end();
+	}
+
+	const_iterator within(app_pc pc, const_iterator* which = NULL)const{
 		const_iterator p = _ranges.begin();
 		const_iterator m = _ranges.end();
 		int num = _ranges.size();
@@ -175,6 +198,7 @@ public:
 	}
 
 	bool find(app_pc pc){
+		if(_ranges.size() == 0) return false;
 		return within(pc) != _ranges.end();
 	}
 	
@@ -202,26 +226,32 @@ public:
 	memory_list() {}
 };
 
-static int untrusted_function_calling = 0;
-static app_pc call_address, return_address;
-static int buffer_idx;
-static int size_id;
-static int read_size_id;
-static int read_size_ref;
-static app_pc read_size_offset;
-static app_pc read_buffer;
-static int read_size;
-
-static memory_list taint_memory;
-static byte taint_regs[DR_REG_INVALID];
-
 typedef std::vector<std::string> function_tables;
-static function_tables funcs;
-static int enter_function;
-static int leave_function;
-static std::string this_function;
-static memory_list skip_list;
 
+typedef struct thread_data_t
+{
+	file_t f;
+
+	int untrusted_function_calling;
+	app_pc call_address, into_address, return_address;
+	int buffer_idx;
+	int size_id;
+	int read_size_id;
+	int read_size_ref;
+	app_pc read_size_offset;
+	app_pc read_buffer;
+	int read_size;
+
+	memory_list taint_memory;
+	byte taint_regs[DR_REG_INVALID];
+
+	function_tables funcs;
+	int enter_function;
+	int leave_function;
+	std::string this_function; 
+}thread_data;
+
+static memory_list skip_list;
 
 static bool
 within_whitelist(app_pc pc)
@@ -232,9 +262,9 @@ within_whitelist(app_pc pc)
 }
 
 static void
-print_function_tables(file_t f, const char* msg)
+print_function_tables(file_t f, const char* msg, function_tables& funcs)
 {
-#if 0
+#if 1
 	dr_fprintf(f, "%s ", msg);
 	for(function_tables::iterator it = funcs.begin();
 		it != funcs.end(); it++)
@@ -418,7 +448,11 @@ static int lookup_syms(app_pc addr, char* module, char *function, int size)
 static int
 taint_alert(instr_t* instr, app_pc target_addr, void* drcontext, dr_mcontext_t *mc)
 {
-	file_t f = (file_t)(ptr_uint_t) dr_get_tls_field(drcontext);
+	thread_data* data = (thread_data*)dr_get_tls_field(drcontext);
+	file_t f = data->f;
+	byte* taint_regs = data->taint_regs;
+	memory_list& taint_memory = data->taint_memory;
+
 	int num = instr_num_srcs(instr);
 	reg_t taint_reg = 0;
 	app_pc taint_addr = 0;
@@ -427,15 +461,15 @@ taint_alert(instr_t* instr, app_pc target_addr, void* drcontext, dr_mcontext_t *
 
 	for(int i = 0; i < num; i++)
 	{
-		opnd_t src_opnd = instr_get_src(instr, i);
+		opnd_t src_opnd = instr_get_src(instr, i);		
 		if(opnd_is_reg(src_opnd) && 
-			taint_regs[taint_reg = opnd_get_reg(src_opnd)] == 1)
+			taint_regs[taint_reg = opnd_get_reg(src_opnd)])
 		{
 			is_taint = true;
 			type = 0;
 			break;
 		}
-		else if(opnd_is_memory_reference(src_opnd) && 
+		else if(opnd_is_memory_reference(src_opnd) &&
 			taint_memory.find(taint_addr = opnd_compute_address(src_opnd, mc)))
 		{
 			is_taint = true;
@@ -469,10 +503,24 @@ taint_alert(instr_t* instr, app_pc target_addr, void* drcontext, dr_mcontext_t *
 static void
 at_call(app_pc instr_addr, app_pc target_addr)
 {
+	void* drcontext = dr_get_current_drcontext();
+	thread_data* data = (thread_data*)dr_get_tls_field(drcontext);
+	int& untrusted_function_calling = data->untrusted_function_calling;
+
 	if(untrusted_function_calling) return;
 
-	void* drcontext = dr_get_current_drcontext();
-	file_t f = (file_t)(ptr_uint_t) dr_get_tls_field(drcontext);
+	file_t f = data->f;
+	app_pc& call_address = data->call_address;
+	app_pc& return_address = data->return_address;
+	int& buffer_idx = data->buffer_idx;
+	int& size_id = data->size_id;
+	int& read_size_id = data->read_size_id;
+	int& read_size_ref = data->read_size_ref;
+	app_pc& read_size_offset = data->read_size_offset;
+	app_pc& read_buffer = data->read_buffer;
+	int& read_size = data->read_size;
+	function_tables& funcs = data->funcs;
+
     dr_mcontext_t mc = {sizeof(mc),DR_MC_ALL};
     dr_get_mcontext(drcontext, &mc);
 
@@ -488,19 +536,24 @@ at_call(app_pc instr_addr, app_pc target_addr)
 	taint_alert(&instr, target_addr, drcontext, &mc);
 	
 	instr_free(drcontext, &instr);
-
-    print_address(f, instr_addr, "[CALL @ ]");
+    
+	print_address(f, instr_addr, "[CALL @ ]");
 	print_address(f, target_addr, "\tInto");
 
-	char mod[MAX_SYM_RESULT], func[MAX_SYM_RESULT];
-	lookup_syms(target_addr, mod, func, MAX_SYM_RESULT);
-	this_function = func;
-	enter_function = 1;
-	leave_function = 0;
+	char mod[MAX_SYM_RESULT], func1[MAX_SYM_RESULT], func2[MAX_SYM_RESULT];
+	lookup_syms(instr_addr, mod, func1, MAX_SYM_RESULT);
+	lookup_syms(target_addr, mod, func2, MAX_SYM_RESULT);
+	//data->this_function = func2;
+	//data->enter_function = 1;
+	//data->leave_function = 0;
+
+	call_address = instr_addr;
+	return_address = instr_addr + length;
+	data->into_address = target_addr;
 
 	if(untrusted_function_calling == 0){
 		for(int j = 0; j < sizeof(rules)/sizeof(struct api_call_rule_t); j++){
-			if(_stricmp(func, rules[j].name) == 0 ){
+			if(_stricmp(func2, rules[j].name) == 0 ){
 				untrusted_function_calling = 1;
 				call_address = instr_addr;
 				return_address = instr_addr + length;
@@ -512,16 +565,14 @@ at_call(app_pc instr_addr, app_pc target_addr)
 				dr_fprintf(f,	"-------------------------------------------\n"
 								PFX" call %s:%s "PFX " and return "PFX"\n"
 								"-------------------------------------------\n", 
-								instr_addr, mod, func, target_addr, return_address);
+								instr_addr, mod, func2, target_addr, return_address);
 				break;
 			}
 		}
 		if(untrusted_function_calling){
 			app_pc boffset, soffset;
-			dr_mcontext_t mc = {sizeof(mc),DR_MC_ALL};
 			size_t size;
 
-			dr_get_mcontext(dr_get_current_drcontext(), &mc);
 			boffset = (app_pc)mc.esp+(buffer_idx-1)*4;
 			soffset = (app_pc)mc.esp+(size_id-1)*4;
 			read_size_offset = (app_pc)mc.esp+(read_size_id-1)*4;
@@ -537,9 +588,19 @@ at_call(app_pc instr_addr, app_pc target_addr)
 	if(untrusted_function_calling == 0)
 	{
 		if(!within_whitelist(target_addr)){
-			print_function_tables(f, "Now in");
-			funcs.push_back(this_function);
-			print_function_tables(f, "Calling");
+			/*
+			for(int i = funcs.size() - 1; i >= 0; i--){
+				if(_stricmp(funcs[i].c_str(), func1) == 0){
+					break;
+				}
+				funcs.pop_back();
+			}//*/
+			if(funcs.size() == 0)
+				funcs.push_back(func1);
+
+			print_function_tables(f, "NowAt\t", funcs);
+			funcs.push_back(func2);
+			print_function_tables(f, "Call\t", funcs);
 		}
 	}
 }
@@ -547,27 +608,38 @@ at_call(app_pc instr_addr, app_pc target_addr)
 static void
 at_return(app_pc instr_addr, app_pc target_addr)
 {
+	void* drcontext = dr_get_current_drcontext();
+	thread_data* data = (thread_data*)dr_get_tls_field(drcontext);
+	int& untrusted_function_calling = data->untrusted_function_calling;
+
 	if(untrusted_function_calling) return;
 
-	file_t f = (file_t)(ptr_uint_t) dr_get_tls_field(dr_get_current_drcontext());
+	file_t f = data->f;
+	function_tables& funcs = data->funcs;
 
-	char funcname[MAX_SYM_RESULT];
-    int t = print_address(f, instr_addr, "[RETURN @ ]", funcname, MAX_SYM_RESULT);
-	print_address(f, target_addr, "\tInto");
+	char func1[MAX_SYM_RESULT], func2[MAX_SYM_RESULT];
+    print_address(f, instr_addr, "[RETURN @ ]", func1, MAX_SYM_RESULT);
+	print_address(f, target_addr, "\tInto", func2, MAX_SYM_RESULT);
 
-	this_function = funcname;
-	leave_function = 1;
-	enter_function = 0;
+	//data->this_function = func1;
+	//data->leave_function = 1;
+	//data->enter_function = 0;
 
 	if(untrusted_function_calling == 0)
 	{
-		print_function_tables(f, "Leaving");
-		//if(_stricmp(funcs.back().c_str(), funcname) != 0)
-		//	dr_fprintf(f, "yw: %s %s\n", funcs.back().c_str(), funcname);
-		{
+		print_function_tables(f, "Leaving\t", funcs);
+
+		funcs.pop_back();
+
+		/*
+		for(int i = funcs.size() - 1; i >= 0; i--){
+			if(_stricmp(funcs[i].c_str(), func2) == 0){
+				break;
+			}
 			funcs.pop_back();
-			print_function_tables(f, "Return");
-		}
+		}//*/
+
+		print_function_tables(f, "Return\t", funcs);
 	}
 }
 
@@ -575,22 +647,54 @@ at_return(app_pc instr_addr, app_pc target_addr)
 static void
 at_jmp(app_pc instr_addr, app_pc target_addr)
 {
+	void* drcontext = dr_get_current_drcontext();
+	thread_data* data = (thread_data*)dr_get_tls_field(drcontext);
+	int& untrusted_function_calling = data->untrusted_function_calling;
+
 	if(untrusted_function_calling) return;
 
-	file_t f = (file_t)(ptr_uint_t) dr_get_tls_field(dr_get_current_drcontext());
+	file_t f = data->f;
     print_address(f, instr_addr, "JMP @ ");
     print_address(f, target_addr, "\tInto ");
 }
 
 static void 
-at_others(app_pc pc)
+at_jmp_ind(app_pc pc)
 {
+	void* drcontext = dr_get_current_drcontext();
+	thread_data* data = (thread_data*)dr_get_tls_field(drcontext);
+	int& untrusted_function_calling = data->untrusted_function_calling;
+
 	if(untrusted_function_calling) return;
 
-	void* drcontext = dr_get_current_drcontext();
-	file_t f = (file_t)(ptr_uint_t) dr_get_tls_field(drcontext);
-    
+	file_t f = data->f;
 	instr_t instr;
+
+	instr_init(drcontext, &instr);
+	instr_reuse(drcontext, &instr);
+	decode(drcontext, pc, &instr);
+
+	print_instr(drcontext, f, &instr, pc);
+	instr_free(drcontext, &instr);
+
+	{
+		//data->funcs.pop_back();
+		print_function_tables(f, "FixIt\t", data->funcs);
+	}
+}
+
+static void 
+at_others(app_pc pc)
+{
+	void* drcontext = dr_get_current_drcontext();
+	thread_data* data = (thread_data*)dr_get_tls_field(drcontext);
+	int& untrusted_function_calling = data->untrusted_function_calling;
+
+	if(untrusted_function_calling) return;
+
+	file_t f = data->f;
+	instr_t instr;
+
 	instr_init(drcontext, &instr);
 	instr_reuse(drcontext, &instr);
 	decode(drcontext, pc, &instr);
@@ -604,10 +708,16 @@ at_others(app_pc pc)
 static void 
 taint_propagation(app_pc pc)
 {
+	void* drcontext = dr_get_current_drcontext();
+	thread_data* data = (thread_data*)dr_get_tls_field(drcontext);
+	int& untrusted_function_calling = data->untrusted_function_calling;
+
 	if(untrusted_function_calling) return;
 
-	void* drcontext = dr_get_current_drcontext();
-	file_t f = (file_t)(ptr_uint_t) dr_get_tls_field(drcontext);
+	file_t f = data->f;
+	byte* taint_regs = data->taint_regs;
+	memory_list& taint_memory = data->taint_memory;
+	
     dr_mcontext_t mc = {sizeof(mc),DR_MC_ALL};
     dr_get_mcontext(drcontext, &mc);
 
@@ -624,7 +734,7 @@ taint_propagation(app_pc pc)
 	reg_t taint_reg = 0, tainting_reg = 0;
 	app_pc taint_addr = 0, tainting_addr = 0;
 
-#if 0
+#if 1
 	//以下是打印源和目标数
 	if(n1 > 0) dr_fprintf(f, "src_opnd(");
 	for(int i = 0; i < n1; i++)
@@ -669,6 +779,8 @@ taint_propagation(app_pc pc)
 			dr_fprintf(f, "%d:instr %d ", i);*/
 	}
 	if(n2 > 0) dr_fprintf(f, ")");
+
+	if(n1 || n2) dr_fprintf(f, "\n");
 #endif
 
 	//以下是污点传播
@@ -726,17 +838,26 @@ taint_propagation(app_pc pc)
 		}
 	}
 
-	//if(n1 || n2) dr_fprintf(f, "\n");
-	
 	instr_free(drcontext, &instr);
 }
 
 static void 
 taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 {
-	if(untrusted_function_calling == 0 || return_address != pc)	return;
+	thread_data* data = (thread_data*)dr_get_tls_field(drcontext);
+	int& untrusted_function_calling = data->untrusted_function_calling;
+	app_pc& return_address = data->return_address;
 	
-	file_t f = (file_t)dr_get_tls_field(drcontext);
+	if(untrusted_function_calling == 0 || return_address != pc)	
+		return;
+
+	file_t f = data->f;
+	int& read_size_id = data->read_size_id;
+	int& read_size_ref = data->read_size_ref;
+	app_pc& read_size_offset = data->read_size_offset;
+	app_pc& read_buffer = data->read_buffer;
+	int& read_size = data->read_size;
+	memory_list& taint_memory = data->taint_memory;
 	
 	//在返回地址处处理函数调用结果
 	app_pc value;
@@ -760,7 +881,7 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 	if(mc->eax)
 	{
 		dr_fprintf(f, "Read Size "PFX"\n", read_size);
-		taint_memory.insert_sort(range(read_buffer, read_buffer+read_size-1));
+		taint_memory.insert_sort(range(read_buffer, read_buffer+read_size));
 	}
 
 	untrusted_function_calling = 0;
@@ -770,12 +891,13 @@ static dr_emit_flags_t
 event_basic_block(void *drcontext, void *tag, instrlist_t *bb,
                   bool for_trace, bool translating)
 {
-    instr_t *instr, *next_instr;
+    instr_t *instr;
 	static int block_cnt = 0;
-	int instr_count_of_block = 0;
-	file_t f = (file_t)(ptr_uint_t) dr_get_tls_field(drcontext);
+	int instr_count = 0;
+	thread_data* data = (thread_data*)dr_get_tls_field(drcontext);
+	file_t f = data->f;
 	dr_mcontext_t mc = {sizeof(mc),DR_MC_ALL};
-	bool is_return = return_address == (app_pc)tag;
+	bool is_return = data->return_address == (app_pc)tag;
 	dr_get_mcontext(drcontext, &mc);
 	block_cnt ++;
 
@@ -784,7 +906,7 @@ event_basic_block(void *drcontext, void *tag, instrlist_t *bb,
 		return DR_EMIT_DEFAULT;
 
 	//检测到过滤函数调用
-	if(untrusted_function_calling)
+	if(data->untrusted_function_calling)
 	{
 		if(!is_return) //准备调用该函数了，直接该函数内部的一切细节
 			return DR_EMIT_DEFAULT;
@@ -793,36 +915,37 @@ event_basic_block(void *drcontext, void *tag, instrlist_t *bb,
 	}//*/
 
 	for (instr = instrlist_first(bb); instr != NULL; instr = instr_get_next(instr))
-		instr_count_of_block++;
+		instr_count++;
 
-	dr_fprintf(f, "\nin dr_basic_block(tag="PFX") %d %d esp is "PFX" instr_count=%d/%d\n", 
-			tag, for_trace, translating, mc.esp, instr_count_of_block, block_cnt);
+	dr_fprintf(f, "\nin dr_basic_block #%d (tag="PFX") esp="PFX" instr_count=%d\n", 
+			block_cnt, tag, mc.esp, instr_count);
 
-	for (instr = instrlist_first(bb); instr != NULL; instr = next_instr) {
-		next_instr = instr_get_next(instr);
-        
-		if (!instr_opcode_valid(instr))	continue;
+	for (instr = instrlist_first(bb); instr != NULL; instr =  instr_get_next(instr)) {
+		int opcode = instr_get_opcode(instr);
+		if(opcode == OP_INVALID)	continue;	
+		
 		//dr_print_instr(drcontext, f, instr, NULL);
 
 		 /* instrument calls and returns  */
         if (instr_is_call_direct(instr)) {
-			dr_insert_call_instrumentation(drcontext, bb, instr, (app_pc)at_call);
+			dr_insert_call_instrumentation(drcontext, bb, instr, at_call);
         } else if (instr_is_call_indirect(instr)) {
-            dr_insert_mbr_instrumentation(drcontext, bb, instr, (app_pc)at_call,
-                                          SPILL_SLOT_1);
+            dr_insert_mbr_instrumentation(drcontext, bb, instr, at_call, SPILL_SLOT_1);
         } else if (instr_is_return(instr)) {
-            dr_insert_mbr_instrumentation(drcontext, bb, instr, (app_pc)at_return,
-                                          SPILL_SLOT_1);
-        } else if (instr_is_near_ubr(instr)) {
+            dr_insert_mbr_instrumentation(drcontext, bb, instr, at_return, SPILL_SLOT_1);
+        } else if (instr_is_ubr(instr)) {
             dr_insert_ubr_instrumentation(drcontext, bb, instr, (app_pc)at_jmp);	
-		} else if(instr_is_mov(instr) || instr_get_opcode(instr) == OP_lea){
+		} else if(opcode == OP_jmp_ind || opcode == OP_jmp_far_ind){
+			dr_insert_clean_call(drcontext, bb, instr, at_jmp_ind, false, 1, 
+				OPND_CREATE_INTPTR(instr_get_app_pc(instr)));
+		} else if(instr_is_mov(instr) || opcode == OP_lea || opcode == OP_movsx ){
 			dr_insert_clean_call(drcontext, bb, instr, taint_propagation, false, 1, 
 				OPND_CREATE_INTPTR(instr_get_app_pc(instr)));
 		} else if(opcode_is_arith(instr_get_opcode(instr))) {
 			dr_insert_clean_call(drcontext, bb, instr, taint_propagation, false, 1, 
 				OPND_CREATE_INTPTR(instr_get_app_pc(instr)));
 		} else {
-			if(instr_count_of_block < 100)
+			if(instr_count < 100)
 				dr_insert_clean_call(drcontext, bb, instr, at_others, false, 1, 
 					OPND_CREATE_INTPTR(instr_get_app_pc(instr)));
 		}
@@ -876,15 +999,24 @@ event_thread_init(void *drcontext)
         DR_ASSERT(dirsep > logname);
     len = dr_snprintf(dirsep + 1,
                       (sizeof(logname)-(dirsep-logname))/sizeof(logname[0]) - 1,
-                      "instrs-%4x.log", dr_get_thread_id(drcontext)/*0xffff*/);
+                      "%s-instrs-%d.log", 
+					  dr_get_application_name(), 
+					  dr_get_thread_id(drcontext)/*0xffff*/);
     DR_ASSERT(len > 0);
     logname[sizeof(logname)/sizeof(logname[0])-1] = '\0';
     f = dr_open_file(logname, DR_FILE_WRITE_OVERWRITE);
     if(f == INVALID_FILE)	
 		f = dr_get_stderr_file();
 
+	thread_data* data = new thread_data();
+	//(thread_data*)dr_thread_alloc(drcontext, sizeof(thread_data));
+	//memset(data, 0, sizeof(thread_data));
+	data->f = f;
+	data->untrusted_function_calling = 0;
+	data->return_address = 0;
+
     /* store it in the slot provided in the drcontext */
-    dr_set_tls_field(drcontext, (void *)(ptr_uint_t)f);
+    dr_set_tls_field(drcontext, data);
     dr_log(drcontext, LOG_ALL, 1, 
            "instrcalls: log for thread %d is instrcalls.%03d\n",
            dr_get_thread_id(drcontext), dr_get_thread_id(drcontext));
@@ -893,11 +1025,15 @@ event_thread_init(void *drcontext)
 static void
 event_thread_exit(void *drcontext)
 {
-    file_t f = (file_t)(ptr_uint_t) dr_get_tls_field(drcontext);
+    thread_data* data = (thread_data*)dr_get_tls_field(drcontext);
+	file_t f = data->f;
 
-	for(memory_list::iterator it = taint_memory.begin();
-		it != taint_memory.end(); it++)
+	for(memory_list::iterator it = data->taint_memory.begin();
+		it != data->taint_memory.end(); it++)
 		dr_fprintf(f, PFX"-"PFX"\n", it->start, it->end);
 
     dr_close_file(f);
+
+	//dr_thread_free(drcontext, data, sizeof(*data));
+	delete data;
 }

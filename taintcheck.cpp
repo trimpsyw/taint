@@ -16,7 +16,7 @@
 
 //#define SHOW_INSTR
 //#define SHOW_PROPAGATION
-#define SHOW_FUNCTION_TREE
+//#define SHOW_FUNCTION_TREE
 
 #ifdef WINDOWS
 # define DISPLAY_STRING(msg) dr_messagebox(msg)
@@ -35,7 +35,9 @@ const char* white_dll[] = {
 	"WindowsCodecs.dll", "MSCTF.dll", "WinUsb.dll", "SETUPAPI.dll",
 	"NSI.dll", "sechost.dll", "DEVOBJ.dll", "CFGMGR32.dll",
 	"cryptbase.dll", "normaliz.dll", "version.dll",
-	"ws2_32.dll", "netapi32.dll"
+	"ws2_32.dll", "netapi32.dll",
+	//"msvcr90.dll", "msvcr80.dll", "msvcr70.dll", "msvcr60.dll",
+	//"msvcp90.dll", "msvcp80.dll", "msvcp70.dll", "msvcp60.dll",
 	"snxhk.dll", "sepro.dll", "360safemonpro.tpi"		//anti-virus
 };
 
@@ -635,16 +637,13 @@ at_return(app_pc instr_addr, app_pc target_addr)
 	if(untrusted_function_calling == 0)
 	{
 		print_function_tables(f, "Leaving\t", funcs);
+		
+		//从内部跳转到外部白名单dll,啥事情都不做
+		if(within_whitelist(instr_addr) == false && within_whitelist(target_addr) == true)
+			;
 
-		funcs.pop_back();
-
-		/*
-		for(int i = funcs.size() - 1; i >= 0; i--){
-			if(_stricmp(funcs[i].c_str(), func2) == 0){
-				break;
-			}
+		else
 			funcs.pop_back();
-		}//*/
 
 		print_function_tables(f, "Return\t", funcs);
 	}
@@ -666,7 +665,7 @@ at_jmp(app_pc instr_addr, app_pc target_addr)
 	instr_init(drcontext, &instr);
 	instr_reuse(drcontext, &instr);
 	decode(drcontext, instr_addr, &instr);
-
+	dr_fprintf(f, "opcode %d\n", instr_get_opcode(&instr));
 	print_instr(drcontext, f, &instr, instr_addr);
 	instr_free(drcontext, &instr);
 
@@ -700,12 +699,13 @@ at_jmp_ind(app_pc instr_addr, app_pc target_addr)
 	decode(drcontext, instr_addr, &instr);
 
 	print_instr(drcontext, f, &instr, instr_addr);
+	//dr_fprintf(f, "opcode %d\n", instr_get_opcode(&instr));
 	instr_free(drcontext, &instr);
 
 	print_address(f, instr_addr, "JMP Ind @ ");
     print_address(f, target_addr, "\tInto ");
 	
-	if(within_whitelist(target_addr)) 
+	if(within_whitelist(target_addr))// && within_whitelist(instr_addr) == false) 
 	{
 		data->funcs.pop_back();
 		print_function_tables(f, "FixIt\t", data->funcs);

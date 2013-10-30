@@ -215,7 +215,7 @@ if (SHOW_SYMBOLS AND DR_EXT_DRSYMS_STATIC)
   set(DynamoRIO_USE_LIBC ON)
 endif ()
 add_sample_client(instrcalls  "instrcalls.c"    "drsyms")
-add_sample_client(taint2       "taint2.cpp"         "drsyms")
+add_sample_client(taintcheck       "taintcheck.cpp"         "drsyms")
 if (SHOW_SYMBOLS AND DR_EXT_DRSYMS_STATIC)
   set(DynamoRIO_USE_LIBC OFF) # reset
 endif ()

@@ -16,7 +16,7 @@
 
 //#define SHOW_INSTR
 //#define SHOW_PROPAGATION
-//#define SHOW_FUNCTION_TREE
+#define SHOW_FUNCTION_TREE
 
 #ifdef WINDOWS
 # define DISPLAY_STRING(msg) dr_messagebox(msg)
@@ -34,11 +34,12 @@ const char* white_dll[] = {
 	"UxTheme.dll", "gdiplus.dll", "WINMM.dll", "LPK.dll",
 	"WindowsCodecs.dll", "MSCTF.dll", "WinUsb.dll", "SETUPAPI.dll",
 	"NSI.dll", "sechost.dll", "DEVOBJ.dll", "CFGMGR32.dll",
-	"cryptbase.dll", "normaliz.dll", "version.dll",
-	"ws2_32.dll", "netapi32.dll",
+	"cryptbase.dll", "normaliz.dll", "version.dll","urlmon.dll",
+	"msimg32.dll", "crypt32.dll",
+	"ws2_32.dll", "netapi32.dll", "WININET.dll", "iphlpapi.dll",
 	//"msvcr90.dll", "msvcr80.dll", "msvcr70.dll", "msvcr60.dll",
 	//"msvcp90.dll", "msvcp80.dll", "msvcp70.dll", "msvcp60.dll",
-	"snxhk.dll", "sepro.dll", "360safemonpro.tpi"		//anti-virus
+	"snxhk.dll", "safemon.dll", "sepro.dll", "360safemonpro.tpi"		//anti-virus
 };
 
 struct api_call_rule_t
@@ -665,7 +666,7 @@ at_jmp(app_pc instr_addr, app_pc target_addr)
 	instr_init(drcontext, &instr);
 	instr_reuse(drcontext, &instr);
 	decode(drcontext, instr_addr, &instr);
-	dr_fprintf(f, "opcode %d\n", instr_get_opcode(&instr));
+
 	print_instr(drcontext, f, &instr, instr_addr);
 	instr_free(drcontext, &instr);
 
@@ -673,12 +674,14 @@ at_jmp(app_pc instr_addr, app_pc target_addr)
     print_address(f, instr_addr, "JMP @ ", func1, MAX_SYM_RESULT);
     print_address(f, target_addr, "\tInto ", func2, MAX_SYM_RESULT);
 
-	/*if(!within_whitelist(target_addr)){
-	} else {
+	//if(skip_list.at(instr_addr) == skip_list.at(target_addr))
+	{
 		data->funcs.pop_back();
-	}*/
-	data->funcs.pop_back();
-	data->funcs.push_back(func2);
+		data->funcs.push_back(func2);
+	} 
+	//else if(within_whitelist(target_addr)){
+	//	data->funcs.pop_back();
+	//}
 	print_function_tables(f, "JmpTo\t", data->funcs);
 }
 
@@ -699,13 +702,12 @@ at_jmp_ind(app_pc instr_addr, app_pc target_addr)
 	decode(drcontext, instr_addr, &instr);
 
 	print_instr(drcontext, f, &instr, instr_addr);
-	//dr_fprintf(f, "opcode %d\n", instr_get_opcode(&instr));
 	instr_free(drcontext, &instr);
 
 	print_address(f, instr_addr, "JMP Ind @ ");
     print_address(f, target_addr, "\tInto ");
 	
-	if(within_whitelist(target_addr))// && within_whitelist(instr_addr) == false) 
+	if(within_whitelist(target_addr)|| data->return_address == target_addr) 
 	{
 		data->funcs.pop_back();
 		print_function_tables(f, "FixIt\t", data->funcs);
@@ -950,6 +952,8 @@ event_basic_block(void *drcontext, void *tag, instrlist_t *bb,
 	}
 	dr_fprintf(f, "\nin dr_basic_block #%d (tag="PFX") esp="PFX" instr_count=%d\n", 
 			block_cnt, tag, mc.esp, instr_count);
+	//if(instr_count > 100)
+	//	return DR_EMIT_DEFAULT;
 	
 	for (instr = instrlist_first(bb); instr != NULL; instr =  instr_get_next(instr)) {
 		int opcode = instr_get_opcode(instr);
@@ -1015,11 +1019,7 @@ event_thread_init(void *drcontext)
     char logname[512];
     char *dirsep;
     int len;
-    /* We're going to dump our data to a per-thread file.
-     * On Windows we need an absolute path so we place it in
-     * the same directory as our library. We could also pass
-     * in a path and retrieve with dr_get_options().
-     */
+
     len = dr_snprintf(logname, sizeof(logname)/sizeof(logname[0]),
                       "%s", dr_get_client_path(my_id));
     DR_ASSERT(len > 0);
@@ -1037,8 +1037,6 @@ event_thread_init(void *drcontext)
 		f = dr_get_stderr_file();
 
 	thread_data* data = new thread_data();
-	//(thread_data*)dr_thread_alloc(drcontext, sizeof(thread_data));
-	//memset(data, 0, sizeof(thread_data));
 	data->f = f;
 	data->untrusted_function_calling = 0;
 	data->return_address = 0;
@@ -1062,6 +1060,5 @@ event_thread_exit(void *drcontext)
 
     dr_close_file(f);
 
-	//dr_thread_free(drcontext, data, sizeof(*data));
 	delete data;
 }

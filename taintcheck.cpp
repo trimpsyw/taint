@@ -16,7 +16,7 @@
 
 //#define SHOW_INSTR
 //#define SHOW_PROPAGATION
-#define SHOW_FUNCTION_TREE
+//#define SHOW_FUNCTION_TREE
 
 #ifdef WINDOWS
 # define DISPLAY_STRING(msg) dr_messagebox(msg)
@@ -284,6 +284,7 @@ print_function_tables(file_t f, const char* msg, function_tables& funcs)
 static void *stats_mutex; /* for multithread support */
 static client_id_t my_id;
 static file_t module_log;
+char logsubdir[MAXIMUM_PATH];
 
 static void event_thread_init(void *drcontext);
 static void event_thread_exit(void *drcontext);
@@ -302,20 +303,91 @@ opcode_is_arith(int opc)
 			opc == OP_mul || opc == OP_div);
 }
 
+#define MAX_OPTION_LEN DR_MAX_OPTIONS_LENGTH
+const char *
+get_option_word(const char *s, char buf[MAX_OPTION_LEN])
+{
+    int i = 0;
+    bool quoted = false;
+    char endquote = '\0';
+    while (*s != '\0' && isspace(*s))
+        s++;
+    if (*s == '\"' || *s == '\'' || *s == '`') {
+        quoted = true;
+        endquote = *s;
+        s++;
+    }
+    while (*s != '\0' && ((!quoted && !isspace(*s)) || (quoted && *s != endquote)) &&
+           i < MAX_OPTION_LEN-1)
+        buf[i++] = *s++;
+    if (quoted && *s == endquote)
+        s++;
+    buf[i] = '\0';
+    if (i == 0 && *s == '\0')
+        return NULL;
+    else
+        return s;
+}
+
+static void
+create_global_logfile(const char* logdir)
+{
+#define BUFFER_SIZE_BYTES(buf)      sizeof(buf)
+#define BUFFER_SIZE_ELEMENTS(buf)   (BUFFER_SIZE_BYTES(buf) / sizeof((buf)[0]))
+#define BUFFER_LAST_ELEMENT(buf)    (buf)[BUFFER_SIZE_ELEMENTS(buf) - 1]
+#define NULL_TERMINATE_BUFFER(buf)  BUFFER_LAST_ELEMENT(buf) = 0
+
+    uint count = 0;
+    const char *appnm = dr_get_application_name();
+    const uint LOGDIR_TRY_MAX = 1000;
+    /* PR 408644: pick a new subdir inside base logdir */
+    /* PR 453867: logdir must have pid in its name */
+    do {
+        dr_snprintf(logsubdir, sizeof(logsubdir), 
+                    "%s/DrTaint-%s.%d.%03d",
+                    logdir, appnm == NULL ? "null" : appnm,
+                    dr_get_process_id(), count);
+        NULL_TERMINATE_BUFFER(logsubdir);
+        /* FIXME PR 514092: if the base logdir is unwritable, we shouldn't loop
+         * UINT_MAX times: it looks like we've hung.
+         * Unfortuantely dr_directory_exists() is Windows-only and
+         * dr_create_dir returns only a bool, so for now we just
+         * fail if we hit 1000 dirs w/ same pid.
+         */
+    } while (!dr_create_dir(logsubdir) && ++count < LOGDIR_TRY_MAX);
+    if (count >= LOGDIR_TRY_MAX) {
+		dr_log(NULL, LOG_ALL, 1, "Unable to create subdir in log base dir %s\n", logdir);
+        dr_abort();
+    }
+
+    //f_global = open_logfile("global", true/*pid suffix*/, -1);
+}
+
 DR_EXPORT void 
 dr_init(client_id_t id)
 {
+    const char* opstr;
+
 	my_id = id;
+	opstr = dr_get_options(my_id);
+
+	{
+		const char *s;
+		char word[MAX_OPTION_LEN];
+		bool hit_logdir = false;
+		for (s = get_option_word(opstr, word); s != NULL; s = get_option_word(s, word)) {
+			if(hit_logdir){
+				create_global_logfile(word);
+				break;
+			}
+			if(strcmp(word, "-logdir") == 0)
+				hit_logdir = true;
+		}
+	}
     
 	stats_mutex = dr_mutex_create();
-    
-	dr_register_bb_event(event_basic_block);
-    dr_register_exit_event(event_exit);
-	dr_register_module_load_event(event_module_load);
-    dr_register_thread_init_event(event_thread_init);
-    dr_register_thread_exit_event(event_thread_exit);
 
-    if (drsym_init(0) != DRSYM_SUCCESS) {
+	if (drsym_init(0) != DRSYM_SUCCESS) {
         dr_log(NULL, LOG_ALL, 1, "WARNING: unable to initialize symbol translation\n");
     }
 
@@ -328,17 +400,17 @@ dr_init(client_id_t id)
         dr_fprintf(STDOUT, "Client bbsize is running\n");
     }
 
+	dr_register_bb_event(event_basic_block);
+    dr_register_exit_event(event_exit);
+	dr_register_module_load_event(event_module_load);
+    dr_register_thread_init_event(event_thread_init);
+    dr_register_thread_exit_event(event_thread_exit);
+
 	char logname[512];
-    char *dirsep;
     int len;
-    
-	len = dr_snprintf(logname, sizeof(logname)/sizeof(logname[0]),
-                      "%s", dr_get_client_path(my_id));
-    for (dirsep = logname + len; *dirsep != '/' IF_WINDOWS(&& *dirsep != '\\'); dirsep--)
-        DR_ASSERT(dirsep > logname);
-    len = dr_snprintf(dirsep + 1,
-                      (sizeof(logname)-(dirsep-logname))/sizeof(logname[0]) - 1,
-                      "load_module.log");
+	len = dr_snprintf(logname,
+                      sizeof(logname)/sizeof(logname[0]) - 1,
+                      "%s/load_module.log", logsubdir);
 
 	module_log = dr_open_file(logname, DR_FILE_WRITE_OVERWRITE);
 }
@@ -1017,18 +1089,12 @@ event_thread_init(void *drcontext)
 {
     file_t f;
     char logname[512];
-    char *dirsep;
     int len;
 
-    len = dr_snprintf(logname, sizeof(logname)/sizeof(logname[0]),
-                      "%s", dr_get_client_path(my_id));
-    DR_ASSERT(len > 0);
-    for (dirsep = logname + len; *dirsep != '/' IF_WINDOWS(&& *dirsep != '\\'); dirsep--)
-        DR_ASSERT(dirsep > logname);
-    len = dr_snprintf(dirsep + 1,
-                      (sizeof(logname)-(dirsep-logname))/sizeof(logname[0]) - 1,
-                      "%s-instrs-%d.log", 
-					  dr_get_application_name(), 
+    len = dr_snprintf(logname,
+                      sizeof(logname)/sizeof(logname[0]) - 1,
+                      "%s/instrs-%d.log", 
+					  logsubdir,
 					  dr_get_thread_id(drcontext)/*0xffff*/);
     DR_ASSERT(len > 0);
     logname[sizeof(logname)/sizeof(logname[0])-1] = '\0';

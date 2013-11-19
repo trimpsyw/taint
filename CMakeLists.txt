@@ -1,33 +1,6 @@
 # **********************************************************
-# Copyright (c) 2010-2013 Google, Inc.    All rights reserved.
-# Copyright (c) 2009-2010 VMware, Inc.    All rights reserved.
+# Copyright (c) 2013 Google, Inc.  All rights reserved.
 # **********************************************************
-
-# Redistribution and use in source and binary forms, with or without
-# modification, are permitted provided that the following conditions are met:
-# 
-# * Redistributions of source code must retain the above copyright notice,
-#   this list of conditions and the following disclaimer.
-# 
-# * Redistributions in binary form must reproduce the above copyright notice,
-#   this list of conditions and the following disclaimer in the documentation
-#   and/or other materials provided with the distribution.
-# 
-# * Neither the name of VMware, Inc. nor the names of its contributors may be
-#   used to endorse or promote products derived from this software without
-#   specific prior written permission.
-# 
-# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-# ARE DISCLAIMED. IN NO EVENT SHALL VMWARE, INC. OR CONTRIBUTORS BE LIABLE
-# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
-# LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
-# OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH
-# DAMAGE.
 
 cmake_minimum_required(VERSION 2.6)
 
@@ -48,11 +21,63 @@ else ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
   set(location_suffix "")
 endif ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
 
-project(DynamoRIO_samples)
+project(DyTaintCheck)
 
-set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/bin")
+# To run out of build dir we put libs and scripts in dirs that match install layout
+# except minus the toolname prefix dir.
+# The CPack NSIS interface requires a bin/ dir, so for the Windows package
+# we prefix bin/
+# XXX: should clean all this up and normalize across platforms now
+# that we have drsyms on Linux and once we're sure we don't need to
+# support the old layout.
+if (WIN32 AND USE_DRSYMS)
+  set(INSTALL_BIN_PREFIX ".")
+  set(BUILD_BIN_PREFIX ".")
+elseif (PERL_TO_EXE)
+  # We are only releasing Dr. Memory so no toolnames: would need to create
+  # shortcut or .bat file to run from right dir
+  if (X64)
+    set(INSTALL_BIN_PREFIX "bin64")
+    set(BUILD_BIN_PREFIX "bin64")
+  else (X64)
+    set(INSTALL_BIN_PREFIX "bin")
+    set(BUILD_BIN_PREFIX "bin")
+  endif (X64)
+else (PERL_TO_EXE)
+  # When installed we now use a bin dir for scripts
+  if (X64)
+    set(INSTALL_BIN_PREFIX "${toolname}/bin64")
+    set(BUILD_BIN_PREFIX "bin64")
+  else (X64)
+    set(INSTALL_BIN_PREFIX "${toolname}/bin")
+    set(BUILD_BIN_PREFIX "bin")
+  endif (X64)
+endif (WIN32 AND USE_DRSYMS)
+if (WIN32 AND USE_DRSYMS)
+  # For NSIS we have everything in top-level bin/
+  # Once we have x64 we'll need to address: fix CPack?
+  if (X64)
+    set(INSTALL_BIN "${INSTALL_BIN_PREFIX}/bin64")
+    set(BUILD_BIN "${BUILD_BIN_PREFIX}/bin64")
+  else (X64)
+    set(INSTALL_BIN "${INSTALL_BIN_PREFIX}/bin")
+    set(BUILD_BIN "${BUILD_BIN_PREFIX}/bin")
+  endif (X64)
+else (WIN32 AND USE_DRSYMS)
+  set(INSTALL_BIN "${INSTALL_BIN_PREFIX}/${BIN_ARCH}")
+  set(BUILD_BIN "${BUILD_BIN_PREFIX}/${BIN_ARCH}")
+endif (WIN32 AND USE_DRSYMS)
+if (DEBUG_BUILD)
+  set(build_type "debug")
+else (DEBUG_BUILD)
+  set(build_type "release")
+endif (DEBUG_BUILD)
+set(INSTALL_LIB "${INSTALL_BIN}/${build_type}")
+set(BUILD_LIB "${BUILD_BIN}/${build_type}")
+
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/${BUILD_LIB}")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}")
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/bin")
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/${BUILD_BIN}")
 if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
   # we don't support the Debug and Release subdirs
   foreach (config ${CMAKE_CONFIGURATION_TYPES})
@@ -138,95 +163,63 @@ if (OPTIMIZE_SAMPLES)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OPT_CFLAGS}")
 endif ()
 
-function (add_sample_client name source_file_list extension_list)
-  add_library(${name} ${libtype} ${source_file_list})
-  configure_DynamoRIO_client(${name})
-  foreach (ext ${extension_list})
-    use_DynamoRIO_extension(${name} ${ext})
-  endforeach (ext)
+##################################################
+# taintchecklib
 
-  # Provide a hint for how to use the client
-  if (NOT DynamoRIO_INTERNAL OR NOT "${CMAKE_GENERATOR}" MATCHES "Ninja")
-    get_target_property(path ${name} LOCATION${location_suffix})
-    add_custom_command(TARGET ${name}
-      POST_BUILD
-      COMMAND ${CMAKE_COMMAND}
-      ARGS -E echo "Usage: pass to drconfig or drrun: -c ${path}"
-      VERBATIM)
-  endif ()
+add_library(taintchecklib SHARED taintcheck.cpp)
 
-endfunction (add_sample_client)
+set_property(TARGET taintchecklib PROPERTY COMPILE_DEFINITIONS ${DEFINES_NO_D})
 
-function (add_sample_standalone name source_file_list)
-  add_executable(${name} ${source_file_list})
+set_target_properties(taintchecklib PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY${location_suffix} "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}")
 
-  # We don't want an rpath as it makes it hard to switch
-  # between debug and release at runtime (rpath is removed
-  # on "make install"; here we avoid in build dir).
-  # DynamoRIOConfig.cmake sets for standalone but not lib.
-  set(DynamoRIO_RPATH OFF)
-  configure_DynamoRIO_standalone(${name})
+# We rely on i#955's "rpath file" to locate the extension on Windows, for
+# the build dir at least.
+set(DynamoRIO_RPATH ON)
+configure_DynamoRIO_client(taintchecklib)
 
-  # Provide a hint for running
-  if (NOT DynamoRIO_INTERNAL OR NOT "${CMAKE_GENERATOR}" MATCHES "Ninja")
-    if (UNIX)
-      set(FIND_MSG "(set LD_LIBRARY_PATH)")
-    else (UNIX)
-      set(FIND_MSG "(set PATH or copy to same directory)")
-    endif (UNIX)
-    add_custom_command(TARGET ${name}
-      POST_BUILD
-      COMMAND ${CMAKE_COMMAND}
-      ARGS -E echo "Make sure the loader finds the dynamorio library ${FIND_MSG}"
-      VERBATIM)
-  endif ()
-endfunction (add_sample_standalone)
+# We could link with the internal static lib but it's a good exercise
+# to test the shared, public version:
+#use_DynamoRIO_extension(taintchecklib drmf_drsyscall)
+use_DynamoRIO_extension(taintchecklib drmgr)
+use_DynamoRIO_extension(taintchecklib drsyms)
+#add_dependencies(taintchecklib drsyscall)
 
-###########################################################################
+install(TARGETS taintchecklib
+  RUNTIME DESTINATION "${INSTALL_LIB}" # dll
+  LIBRARY DESTINATION "${INSTALL_LIB}" # .so
+  PERMISSIONS OWNER_READ OWNER_EXECUTE GROUP_READ GROUP_EXECUTE
+  WORLD_READ WORLD_EXECUTE)
 
-# As we'll be calling configure_DynamoRIO_{client,standalone} from within
-# a function scope, we must set the global vars ahead of time:
-configure_DynamoRIO_global(OFF ON)
+# XXX DRi#1078: we should add the relative dir .drpath support!
+# For now we copy drsyscall.dll.  CMake won't let us install it as a
+# target from this dir so we copy it as a file.
+get_target_property(drsys_path drsyscall LOCATION${location_suffix})
+install(FILES ${drsys_path} DESTINATION "${INSTALL_LIB}"
+  PERMISSIONS OWNER_READ OWNER_EXECUTE GROUP_READ GROUP_EXECUTE
+  WORLD_READ WORLD_EXECUTE)
 
-# Use ;-separated lists for source files and extensions.
+##################################################
+# drtaintcheck frontend
 
-#add_sample_client(bbbuf       "bbbuf.c"         "")
-#add_sample_client(bbcount     "bbcount.c"       "")
-#add_sample_client(bbsize      "bbsize.c"        "")
-#add_sample_client(cbr         "cbr.c"           "")
-#add_sample_client(countcalls  "countcalls.c"    "")
-#add_sample_client(div         "div.c"           "")
-#add_sample_client(empty       "empty.c"         "")
-#add_sample_client(inc2add     "inc2add.c"       "")
-#add_sample_client(inline      "inline.c"        "")
-#add_sample_client(inscount    "inscount.c"      "")
-#add_sample_client(memtrace    "memtrace.c"      "drmgr;drutil")
-#add_sample_client(prefetch    "prefetch.c"      "")
-#add_sample_client(signal      "signal.c"        "")
-#add_sample_client(stl_test    "stl_test.cpp"    "")
-#add_sample_client(strace      "strace.c"        "drmgr")
-#add_sample_client(wrap        "wrap.c"          "drwrap")
-#add_sample_client(modxfer     "modxfer.c;utils.c"       "drx")
-#add_sample_client(modxfer_app2lib "modxfer_app2lib.c"   "")
-add_sample_client(taint       "taint.c"         "drcontainers")
+# Restore global flags
+foreach (config "" ${CMAKE_BUILD_TYPE} ${CMAKE_CONFIGURATION_TYPES})
+  if ("${config}" STREQUAL "")
+    set(config_upper "")
+  else ("${config}" STREQUAL "")
+    string(TOUPPER "_${config}" config_upper)
+  endif ("${config}" STREQUAL "")
+  foreach (var CMAKE_C_FLAGS${config_upper};CMAKE_CXX_FLAGS${config_upper})
+    set(${var} "${SAVE_${var}}")
+  endforeach (var)
+endforeach (config)
 
-if (SHOW_SYMBOLS AND DR_EXT_DRSYMS_STATIC)
-  # required for using drsyms built as a static library
-  set(DynamoRIO_USE_LIBC ON)
-endif ()
-add_sample_client(instrcalls  "instrcalls.c"    "drsyms")
-add_sample_client(taintcheck       "taintcheck.cpp"         "drsyms")
-if (SHOW_SYMBOLS AND DR_EXT_DRSYMS_STATIC)
-  set(DynamoRIO_USE_LIBC OFF) # reset
-endif ()
+add_executable(drtaintcheck drtaintcheck_frontend.c)
+configure_DynamoRIO_standalone(drtaintcheck)
+target_link_libraries(drtaintcheck drinjectlib drconfiglib)
+#set_target_properties(drtaintcheck PROPERTIES VERSION ${DRMF_VERSION})
+set_property(TARGET drtaintcheck PROPERTY COMPILE_DEFINITIONS ${DEFINES_NO_D})
 
-if (WIN32)
-  # This client is Windows-only.
-  #add_sample_client(stats     "stats.c"         "")
-
-  # XXX i#893: drwrap's asm isn't SEH compliant.
-  #append_property_string(TARGET wrap LINK_FLAGS "/safeseh:no")
-endif ()
-
-add_sample_standalone(tracedump   "tracedump.c")
-
+install(TARGETS drtaintcheck DESTINATION "${INSTALL_BIN}"
+  PERMISSIONS OWNER_READ OWNER_EXECUTE GROUP_READ GROUP_EXECUTE
+  WORLD_READ WORLD_EXECUTE)

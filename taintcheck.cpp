@@ -4,7 +4,7 @@
 
 
 /*Taint analysis 
- * taint2.cpp
+ * taintcheck.cpp
  */
 
 #include "dr_api.h"
@@ -14,7 +14,7 @@
 #include <algorithm>
 #include <string>
 
-//#define SHOW_INSTR
+#define SHOW_INSTR
 //#define SHOW_PROPAGATION
 //#define SHOW_FUNCTION_TREE
 
@@ -37,6 +37,7 @@ const char* white_dll[] = {
 	"cryptbase.dll", "normaliz.dll", "version.dll","urlmon.dll",
 	"msimg32.dll", "crypt32.dll",
 	"ws2_32.dll", "netapi32.dll", "WININET.dll", "iphlpapi.dll",
+	"mswsock.dll", "wshtcpip.dll",
 	//"msvcr90.dll", "msvcr80.dll", "msvcr70.dll", "msvcr60.dll",
 	//"msvcp90.dll", "msvcp80.dll", "msvcp70.dll", "msvcp60.dll",
 	"snxhk.dll", "safemon.dll", "sepro.dll", "360safemonpro.tpi"		//anti-virus
@@ -49,7 +50,7 @@ struct api_call_rule_t
 	
 	int param_count;
 	
-	int buffer_id;
+	int buffer_id; /*从1开始计数，0代表返回值*/
 	
 	int size_id:8;
 	int size_is_reference:8;
@@ -59,7 +60,8 @@ struct api_call_rule_t
 
 }rules[] = {
 	{"MSVCRT.dll",		"fgets",	3, 1, 2, 0, -1, 0},
-	{"Kernel32.dll",	"ReadFile", 5, 2, 3, 0, 4,	1}
+	{"Kernel32.dll",	"ReadFile", 5, 2, 3, 0, 4,	1},
+	{"MSVCRT.dll",		"fread",    4, 1, 2, 0, -1, 0},
 };
 
 struct range {
@@ -807,6 +809,27 @@ at_others(app_pc pc)
 	instr_free(drcontext, &instr);
 }
 
+static void
+clear_tag_eacbdx(reg_id_t reg, byte* taint_regs)
+{
+	if(reg == DR_REG_EAX){
+		taint_regs[DR_REG_AX] = 0;
+		taint_regs[DR_REG_AL] = 0;
+		taint_regs[DR_REG_AH] = 0;
+	} else if(reg == DR_REG_ECX){
+		taint_regs[DR_REG_CX] = 0;
+		taint_regs[DR_REG_CL] = 0;
+		taint_regs[DR_REG_CH] = 0;
+	} else if(reg == DR_REG_EBX){
+		taint_regs[DR_REG_BX] = 0;
+		taint_regs[DR_REG_BL] = 0;
+		taint_regs[DR_REG_BH] = 0;
+	} else if(reg == DR_REG_EDX){
+		taint_regs[DR_REG_DX] = 0;
+		taint_regs[DR_REG_DL] = 0;
+		taint_regs[DR_REG_DH] = 0;
+	}
+}
 
 static void 
 taint_propagation(app_pc pc)
@@ -814,7 +837,7 @@ taint_propagation(app_pc pc)
 	void* drcontext = dr_get_current_drcontext();
 	thread_data* data = (thread_data*)dr_get_tls_field(drcontext);
 	int& untrusted_function_calling = data->untrusted_function_calling;
-
+	
 	if(untrusted_function_calling) return;
 
 	file_t f = data->f;
@@ -828,9 +851,10 @@ taint_propagation(app_pc pc)
 	instr_init(drcontext, &instr);
 	instr_reuse(drcontext, &instr);
 	decode(drcontext, pc, &instr);
-
+	
 	print_instr(drcontext, f, &instr, pc);
 
+	int opcode = instr_get_opcode(&instr);
 	int n1 = instr_num_srcs(&instr);
 	int n2 = instr_num_dsts(&instr);
 	bool src_tainted = false;
@@ -886,9 +910,47 @@ taint_propagation(app_pc pc)
 	if(n1 || n2) dr_fprintf(f, "\n");
 #endif
 
+	if(opcode == OP_pop){
+		//dr_fprintf(f, PFX" ",  pc);
+		//instr_disassemble(drcontext, &instr, f);
+		//dr_fprintf(f, "\t[%d, %d] %x",  n1, n2, mc.esp);
+		if(n2 > 0){
+			opnd_t dst_opnd = instr_get_dst(&instr, 0);
+			if(!opnd_is_reg(dst_opnd)) return;
+			
+			reg_id_t reg = opnd_get_reg(dst_opnd);
+			
+			app_pc value;
+			size_t size;
+			dr_safe_read((void *)mc.esp, 4, &value, &size);
+			//dr_fprintf(f, "\t%x\n",  value);
+
+			if(data->taint_memory.find(value) == false)
+			{
+				taint_regs[reg] = 0;
+				clear_tag_eacbdx(reg, taint_regs);
+			}
+		}
+		return;
+	} else if(opcode == OP_xor){ /* xor eax, eax */
+		if(n1 != 2)	return;
+
+		opnd_t opnd1 = instr_get_src(&instr, 0);
+		opnd_t opnd2 = instr_get_src(&instr, 0);
+		if(!opnd_is_reg(opnd1) || !opnd_is_reg(opnd2))
+			return;
+		reg_id_t reg1 = opnd_get_reg(opnd1);
+		reg_id_t reg2 = opnd_get_reg(opnd2);
+		if(reg1 != reg2) return;
+		
+		taint_regs[reg1] = 0;
+		clear_tag_eacbdx(reg1, taint_regs);
+	}
+
 	//以下是污点传播
 	if(n1 && n2)
 	{
+		int type = -1;
 		for(int i = 0; i < n1; i++)
 		{
 			opnd_t src_opnd = instr_get_src(&instr, i);
@@ -896,33 +958,38 @@ taint_propagation(app_pc pc)
 				taint_regs[taint_reg = opnd_get_reg(src_opnd)] == 1)
 			{
 				src_tainted = true;
+				type = 0;
 				break;
 			}
 			else if(opnd_is_memory_reference(src_opnd) && 
 				taint_memory.find(taint_addr = opnd_compute_address(src_opnd, &mc)))
 			{
 				src_tainted = true;
+				type = 1;
 				break;
 			}
 			else if(opnd_is_pc(src_opnd) && 
 				taint_memory.find(taint_addr = opnd_get_pc(src_opnd)))
 			{
 				src_tainted = true;
+				type = 2;
 				break;
 			}
 		}
 
-		if(src_tainted)
+		opnd_t dst_opnd = instr_get_dst(&instr, 0);
+
+		if(src_tainted)//污染标记
 		{
 			dr_fprintf(f, "\t$$$$ taint ");
 
-			if(taint_addr == 0)
+			if(type == 0)
 				dr_fprintf(f, "reg:%d ", taint_reg);
-			else
+			else if(type == 1)
+				dr_fprintf(f, "$mem:0x%08x ", taint_addr);
+			else if(type == 2)
 				dr_fprintf(f, "mem:0x%08x ", taint_addr);
 
-			opnd_t dst_opnd = instr_get_dst(&instr, 0);
-			
 			if(opnd_is_reg(dst_opnd))
 				taint_regs[tainting_reg = opnd_get_reg(dst_opnd)] = 1;
 
@@ -938,6 +1005,14 @@ taint_propagation(app_pc pc)
 				dr_fprintf(f, "---> mem:0x%08x ", tainting_addr);
 
 			dr_fprintf(f, " $$$$\n");
+		} 
+		else//清除标记
+		{
+			if(opnd_is_reg(dst_opnd))
+			{
+				taint_regs[tainting_reg = opnd_get_reg(dst_opnd)] = 0;
+				clear_tag_eacbdx(tainting_reg, taint_regs);
+			}
 		}
 	}
 
@@ -1043,6 +1118,9 @@ event_basic_block(void *drcontext, void *tag, instrlist_t *bb,
 		} else if(opcode == OP_jmp_ind || opcode == OP_jmp_far_ind){
 			dr_insert_mbr_instrumentation(drcontext, bb, instr, at_jmp_ind, SPILL_SLOT_1);
 		} else if(instr_is_mov(instr) || opcode == OP_lea || opcode == OP_movsx ){
+			dr_insert_clean_call(drcontext, bb, instr, taint_propagation, false, 1, 
+				OPND_CREATE_INTPTR(instr_get_app_pc(instr)));
+		} else if(opcode == OP_pop || opcode == OP_popa ){
 			dr_insert_clean_call(drcontext, bb, instr, taint_propagation, false, 1, 
 				OPND_CREATE_INTPTR(instr_get_app_pc(instr)));
 		} else if(opcode_is_arith(instr_get_opcode(instr))) {

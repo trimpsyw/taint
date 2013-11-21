@@ -347,6 +347,7 @@ _tmain(int argc, TCHAR *targv[])
 
     dr_standalone_init();
 
+
 #ifdef _UNICODE
     /* To simplify our (soon-to-be) cross-platform code we convert to utf8 up front.
      * We need to do this for app_argv in any case so there's not much extra
@@ -663,6 +664,17 @@ _tmain(int argc, TCHAR *targv[])
         }
         BUFPRINT(dr_ops, BUFFER_SIZE_ELEMENTS(dr_ops),
                  drops_sofar, len, "-logdir `%s` ", scratch);
+    }
+
+	if (strstr(client_ops, "-lib_whitelist") == NULL) {
+        bool ok = get_env_var(_T("SYSTEMROOT"), buf, BUFFER_SIZE_ELEMENTS(buf));
+        if (ok) {
+            BUFPRINT(client_ops, BUFFER_SIZE_ELEMENTS(client_ops),
+                     /* Add .d?? to still report errors in app .exe but not
+                      * in *.dll or *.drv.
+                      */
+                     cliops_sofar, len, "-lib_whitelist %s*.d?? ", buf);
+        }
     }
 
     info("----Step 0: configuring process %s----", app_name);

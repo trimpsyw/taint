@@ -8,12 +8,13 @@
  */
 
 #include "dr_api.h"
-# include "drsyms.h"
+#include "drsyms.h"
 
 #include <vector>
 #include <algorithm>
 #include <string>
 
+#define SHOW_SYM
 #define SHOW_INSTR
 //#define SHOW_PROPAGATION
 //#define SHOW_FUNCTION_TREE
@@ -38,6 +39,8 @@ const char* white_dll[] = {
 	"msimg32.dll", "crypt32.dll",
 	"ws2_32.dll", "netapi32.dll", "WININET.dll", "iphlpapi.dll",
 	"mswsock.dll", "wshtcpip.dll",
+	"netutils.dll", "srvcli.dll", "wkscli.dll", "netbios.dll",
+
 	//"msvcr90.dll", "msvcr80.dll", "msvcr70.dll", "msvcr60.dll",
 	//"msvcp90.dll", "msvcp80.dll", "msvcp70.dll", "msvcp60.dll",
 	"snxhk.dll", "safemon.dll", "sepro.dll", "360safemonpro.tpi"		//anti-virus
@@ -45,24 +48,88 @@ const char* white_dll[] = {
 
 struct api_call_rule_t
 {
-	char module[64];
-	char name[64];
+	char module[64];				/* 模块名 */
+	char name[64];					/* 函数名 */
 	
-	int param_count;
+	int param_count:16;			/* 函数参数总个数 */
 	
-	int buffer_id; /*从1开始计数，0代表返回值*/
+	int buffer_id:8;				/* 参数索引从1开始计数，0代表返回值 */
+	int buffer_is_char:8;			/* 是否为普通char数组 */
 	
-	int size_id:8;
-	int size_is_reference:8;
+	int size_id:8;					/* In buffer大小 */
+	int size_is_reference:8;		/* 是否为指针 */
 
-	int read_size_id:8;
-	int read_size_is_reference:8;
+	int read_size_id:8;				/* 返回buffer的大小， 0表示在返回值*/
+	int read_size_is_reference:8;	/* 是否为指针 */
+
+	int succeed_return_status;		/* 函数调用成功返回0还是非0*/ 
 
 }rules[] = {
-	{"MSVCRT.dll",		"fgets",	3, 1, 2, 0, -1, 0},
-	{"Kernel32.dll",	"ReadFile", 5, 2, 3, 0, 4,	1},
-	{"MSVCRT.dll",		"fread",    4, 1, 2, 0, -1, 0},
+	{"MSVC*.dll",		"fgets",		3, 1, 0, 2, 0, -1, 0, 1},
+	{"Kernel32.dll",	"ReadFile",		5, 2, 0, 3, 0, 4,	1, 1},
+	{"MSVC*.dll",		"fread",		4, 1, 0, 2, 0, -1, 0, 1},
+	{"ws2_32.dll",		"WSARecvFrom",	9, 2, 1, 3, 0, 4, 1, 0},
+	{"ws2_32.dll",		"WSARecv",		7, 2, 1, 3, 0, 4, 1, 0},
 };
+
+bool
+text_matches_pattern(const char *text, const char *pattern,
+                     bool ignore_case)
+{
+    /* Match text with pattern and return the result.
+     * The pattern may contain '*' and '?' wildcards.
+     */
+    const char *cur_text = text,
+               *text_last_asterisk = NULL,
+               *pattern_last_asterisk = NULL;
+    char cmp_cur, cmp_pat;
+    while (*cur_text != '\0') {
+        cmp_cur = *cur_text;
+        cmp_pat = *pattern;
+        if (ignore_case) {
+            cmp_cur = (char) tolower(cmp_cur);
+            cmp_pat = (char) tolower(cmp_pat);
+        }
+        if (*pattern == '*') {
+            while (*++pattern == '*') {
+                /* Skip consecutive '*'s */
+            }
+            if (*pattern == '\0') {
+                /* the pattern ends with a series of '*' */
+                return true;
+            }
+            text_last_asterisk = cur_text;
+            pattern_last_asterisk = pattern;
+        } else if ((cmp_cur == cmp_pat) || (*pattern == '?')) {
+            ++cur_text;
+            ++pattern;
+        } else if (text_last_asterisk != NULL) {
+            /* No match. But we have seen at least one '*', so go back
+             * and try at the next position.
+             */
+            pattern = pattern_last_asterisk;
+            cur_text = text_last_asterisk++;
+        } else {
+            return false;
+        }
+    }
+    while (*pattern == '*')
+        ++pattern;
+    return *pattern == '\0';
+}
+
+/* patterns is a null-separated, double-null-terminated list of strings */
+bool
+text_matches_any_pattern(const char *text, const char *patterns, bool ignore_case)
+{
+    const char *c = patterns;
+    while (*c != '\0') {
+        if (text_matches_pattern(text, c, ignore_case))
+            return true;
+        c += strlen(c) + 1;
+    }
+    return false;
+}
 
 struct range {
 	app_pc start, end;
@@ -245,9 +312,11 @@ typedef struct thread_data_t
 	int untrusted_function_calling;
 	app_pc call_address, into_address, return_address;
 	int buffer_idx;
+	int char_buffer;
 	int size_id;
 	int read_size_id;
 	int read_size_ref;
+	int succeed_return_status;
 	app_pc read_size_offset;
 	app_pc read_buffer;
 	int read_size;
@@ -286,7 +355,9 @@ print_function_tables(file_t f, const char* msg, function_tables& funcs)
 static void *stats_mutex; /* for multithread support */
 static client_id_t my_id;
 static file_t module_log;
+static const char* appnm;
 char logsubdir[MAXIMUM_PATH];
+char whitelist_lib[MAXIMUM_PATH];
 
 static void event_thread_init(void *drcontext);
 static void event_thread_exit(void *drcontext);
@@ -302,7 +373,8 @@ opcode_is_arith(int opc)
     return (opc == OP_add || opc == OP_sub ||
             opc == OP_inc || opc == OP_dec ||
 			opc == OP_xor || opc == OP_or || opc == OP_and ||
-			opc == OP_mul || opc == OP_div);
+			opc == OP_mul || opc == OP_div ||
+			opc == OP_sar || opc == OP_shl || opc == OP_shr);
 }
 
 #define MAX_OPTION_LEN DR_MAX_OPTIONS_LENGTH
@@ -372,18 +444,26 @@ dr_init(client_id_t id)
 
 	my_id = id;
 	opstr = dr_get_options(my_id);
+	appnm = dr_get_application_name();
 
 	{
 		const char *s;
 		char word[MAX_OPTION_LEN];
-		bool hit_logdir = false;
-		for (s = get_option_word(opstr, word); s != NULL; s = get_option_word(s, word)) {
-			if(hit_logdir){
-				create_global_logfile(word);
-				break;
+		int hit_type = 0;
+		for (s = get_option_word(opstr, word); s != NULL; s = get_option_word(s, word)) 
+		{
+			if(hit_type)
+			{
+				if(hit_type == 1)	
+					create_global_logfile(word);
+				else if(hit_type == 2) 
+					strncpy(whitelist_lib, word, sizeof(whitelist_lib));
+				hit_type = 0;
 			}
 			if(strcmp(word, "-logdir") == 0)
-				hit_logdir = true;
+				hit_type = 1;
+			else if(strcmp(word, "-lib_whitelist") == 0)
+				hit_type = 2;
 		}
 	}
     
@@ -451,7 +531,9 @@ print_address(file_t f, app_pc addr, const char *prefix, char* function = NULL, 
 
     data = dr_lookup_module(addr);
     if (data == NULL) {
-        dr_fprintf(f, "%s "PFX" unknown ??:0\n", prefix, addr);
+#ifdef SHOW_SYM
+		dr_fprintf(f, "%s "PFX" unknown ??:0\n", prefix, addr);
+#endif
 		strcpy(function, "unknown");
         return 0;
     }
@@ -471,17 +553,14 @@ print_address(file_t f, app_pc addr, const char *prefix, char* function = NULL, 
     
 	if (symres == DRSYM_SUCCESS || symres == DRSYM_ERROR_LINE_NOT_AVAILABLE) {
 
-        dr_fprintf(f, "%s "PFX" %s:%s", prefix, addr, modname, sym.name);
-
-        if (symres == DRSYM_ERROR_LINE_NOT_AVAILABLE) {
-            dr_fprintf(f, " ??:0\n");
-        } else {
-            dr_fprintf(f, " %s:%"UINT64_FORMAT_CODE"+"PIFX"\n",
-                       sym.file, sym.line, sym.line_offs);
-        }
+#ifdef SHOW_SYM
+       dr_fprintf(f, "%s "PFX" %s:%s\n", prefix, addr, modname, sym.name);
+#endif
 	} else {
 		sprintf(function, "%x", addr);
-		dr_fprintf(f, "%s "PFX" %s:%s ??:0\n", prefix, addr, modname, function);
+#ifdef SHOW_SYM
+		dr_fprintf(f, "%s "PFX" %s:%s\n", prefix, addr, modname, function);
+#endif
 	}
 
     dr_free_module_data(data);
@@ -597,9 +676,11 @@ at_call(app_pc instr_addr, app_pc target_addr)
 	app_pc& call_address = data->call_address;
 	app_pc& return_address = data->return_address;
 	int& buffer_idx = data->buffer_idx;
+	int& char_buffer = data->char_buffer;
 	int& size_id = data->size_id;
 	int& read_size_id = data->read_size_id;
 	int& read_size_ref = data->read_size_ref;
+	int& succeed_return_status = data->succeed_return_status;
 	app_pc& read_size_offset = data->read_size_offset;
 	app_pc& read_buffer = data->read_buffer;
 	int& read_size = data->read_size;
@@ -627,9 +708,6 @@ at_call(app_pc instr_addr, app_pc target_addr)
 	char mod[MAX_SYM_RESULT], func1[MAX_SYM_RESULT], func2[MAX_SYM_RESULT];
 	lookup_syms(instr_addr, mod, func1, MAX_SYM_RESULT);
 	lookup_syms(target_addr, mod, func2, MAX_SYM_RESULT);
-	//data->this_function = func2;
-	//data->enter_function = 1;
-	//data->leave_function = 0;
 
 	call_address = instr_addr;
 	return_address = instr_addr + length;
@@ -637,14 +715,18 @@ at_call(app_pc instr_addr, app_pc target_addr)
 
 	if(untrusted_function_calling == 0){
 		for(int j = 0; j < sizeof(rules)/sizeof(struct api_call_rule_t); j++){
-			if(_stricmp(func2, rules[j].name) == 0 ){
+			if((text_matches_any_pattern(mod, rules[j].module, true) || !_stricmp(mod, appnm)) &&
+				!_stricmp(func2, rules[j].name))
+			{
 				untrusted_function_calling = 1;
 				call_address = instr_addr;
 				return_address = instr_addr + length;
 				buffer_idx = rules[j].buffer_id;
+				char_buffer = rules[j].buffer_is_char;
 				size_id = rules[j].size_id;
 				read_size_id = rules[j].read_size_id;
 				read_size_ref = rules[j].read_size_is_reference;
+				succeed_return_status = rules[j].succeed_return_status;
 
 				dr_fprintf(f,	"-------------------------------------------\n"
 								PFX" call %s:%s "PFX " and return "PFX"\n"
@@ -704,10 +786,6 @@ at_return(app_pc instr_addr, app_pc target_addr)
 	char func1[MAX_SYM_RESULT], func2[MAX_SYM_RESULT];
     print_address(f, instr_addr, "[RETURN @ ]", func1, MAX_SYM_RESULT);
 	print_address(f, target_addr, "\tInto", func2, MAX_SYM_RESULT);
-
-	//data->this_function = func1;
-	//data->leave_function = 1;
-	//data->enter_function = 0;
 
 	if(untrusted_function_calling == 0)
 	{
@@ -911,9 +989,6 @@ taint_propagation(app_pc pc)
 #endif
 
 	if(opcode == OP_pop){
-		//dr_fprintf(f, PFX" ",  pc);
-		//instr_disassemble(drcontext, &instr, f);
-		//dr_fprintf(f, "\t[%d, %d] %x",  n1, n2, mc.esp);
 		if(n2 > 0){
 			opnd_t dst_opnd = instr_get_dst(&instr, 0);
 			if(!opnd_is_reg(dst_opnd)) return;
@@ -923,8 +998,7 @@ taint_propagation(app_pc pc)
 			app_pc value;
 			size_t size;
 			dr_safe_read((void *)mc.esp, 4, &value, &size);
-			//dr_fprintf(f, "\t%x\n",  value);
-
+		
 			if(data->taint_memory.find(value) == false)
 			{
 				taint_regs[reg] = 0;
@@ -951,9 +1025,11 @@ taint_propagation(app_pc pc)
 	if(n1 && n2)
 	{
 		int type = -1;
+		opnd_t src_opnd;
+		
 		for(int i = 0; i < n1; i++)
 		{
-			opnd_t src_opnd = instr_get_src(&instr, i);
+			src_opnd = instr_get_src(&instr, i);
 			if(opnd_is_reg(src_opnd) && 
 				taint_regs[taint_reg = opnd_get_reg(src_opnd)] == 1)
 			{
@@ -984,7 +1060,8 @@ taint_propagation(app_pc pc)
 			dr_fprintf(f, "\t$$$$ taint ");
 
 			if(type == 0)
-				dr_fprintf(f, "reg:%d ", taint_reg);
+				//dr_fprintf(f, "reg:%d ", taint_reg);
+				opnd_disassemble(drcontext, src_opnd, f);
 			else if(type == 1)
 				dr_fprintf(f, "$mem:0x%08x ", taint_addr);
 			else if(type == 2)
@@ -1000,7 +1077,11 @@ taint_propagation(app_pc pc)
 				taint_memory.insert_sort(tainting_addr = opnd_get_pc(dst_opnd));
 
 			if(tainting_addr == 0)
-				dr_fprintf(f, "---> reg:%d ", tainting_reg);
+			{
+				//dr_fprintf(f, "---> reg:%d ", tainting_reg);
+				dr_fprintf(f, "---> ");
+				opnd_disassemble(drcontext, dst_opnd, f);
+			}
 			else
 				dr_fprintf(f, "---> mem:0x%08x ", tainting_addr);
 
@@ -1032,6 +1113,7 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 	file_t f = data->f;
 	int& read_size_id = data->read_size_id;
 	int& read_size_ref = data->read_size_ref;
+	int& return_status = data->succeed_return_status;
 	app_pc& read_size_offset = data->read_size_offset;
 	app_pc& read_buffer = data->read_buffer;
 	int& read_size = data->read_size;
@@ -1056,10 +1138,14 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 		read_size = (int)value;
 	}
 
-	if(mc->eax)
+	if((return_status && mc->eax) || (return_status == 0 && mc->eax == 0))
 	{
 		dr_fprintf(f, "Read Size "PFX"\n", read_size);
 		taint_memory.insert_sort(range(read_buffer, read_buffer+read_size));
+	}
+	else
+	{
+		dr_fprintf(f, "Failed to call function\n");
 	}
 
 	untrusted_function_calling = 0;
@@ -1145,19 +1231,27 @@ event_module_load(void *drcontext, const module_data_t *info, bool loaded)
 	if(module_log != INVALID_FILE)
 	{
 		dr_fprintf(module_log, "%s module_load event %s %s %s %s %s "PFX"-"PFX"\n", 
-			dr_get_application_name(), info->full_path, info->names.file_name, info->names.exe_name, 
+			appnm, info->full_path, info->names.file_name, info->names.exe_name, 
 			info->names.module_name, info->names.rsrc_name,
 			info->start, info->end);
 	}
 
-	for(int i = 0; i < sizeof(white_dll)/sizeof(white_dll[0]); i++)
+	if(text_matches_any_pattern(info->full_path, whitelist_lib, true))
 	{
-		if(info->names.module_name &&
-			_stricmp(white_dll[i], info->names.module_name) == 0)
+		dr_fprintf(module_log, "lib_whitelist module %s\n", info->names.module_name);
+		skip_list.insert_sort(range(info->start, info->end));
+	}
+	else
+	{
+		for(int i = 0; i < sizeof(white_dll)/sizeof(white_dll[0]); i++)
 		{
-			dr_fprintf(module_log, "whitelist module %s\n", info->names.module_name);
-			skip_list.insert_sort(range(info->start, info->end));
-			break;
+			if(info->names.module_name &&
+				_stricmp(white_dll[i], info->names.module_name) == 0)
+			{
+				dr_fprintf(module_log, "whitelist module %s\n", info->names.module_name);
+				skip_list.insert_sort(range(info->start, info->end));
+				break;
+			}
 		}
 	}
 }

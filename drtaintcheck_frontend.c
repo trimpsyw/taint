@@ -732,8 +732,10 @@ _tmain(int argc, TCHAR *targv[])
     dr_inject_process_run(inject_data);
     info("waiting for app to exit...");
 
+	info("----Step 5: dr_inject_get_process_handle ");
 	errcode = WaitForSingleObject(dr_inject_get_process_handle(inject_data), INFINITE);
-    if (errcode != WAIT_OBJECT_0)
+    
+	if (errcode != WAIT_OBJECT_0)
         info("failed to wait for app: %d\n", errcode);
     if (top_stats) {
         double wallclock;

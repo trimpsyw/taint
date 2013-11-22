@@ -14,7 +14,9 @@
 #include <algorithm>
 #include <string>
 
-#define SHOW_SYM
+#define MAX_CLEAN_INSTR_COUNT 64
+
+//#define SHOW_SYM
 //#define SHOW_INSTR
 //#define SHOW_PROPAGATION
 //#define SHOW_FUNCTION_TREE
@@ -1198,6 +1200,7 @@ event_basic_block(void *drcontext, void *tag, instrlist_t *bb,
 	bool is_return = data->return_address == (app_pc)tag;
 	dr_get_mcontext(drcontext, &mc);
 	block_cnt ++;
+	int insert_count = 0;
 
 	//跳过白名单
 	if(within_whitelist((app_pc)tag))
@@ -1225,6 +1228,8 @@ event_basic_block(void *drcontext, void *tag, instrlist_t *bb,
 		int opcode = instr_get_opcode(instr);
 		if(opcode == OP_INVALID)	continue;
 
+		if(++ insert_count >= MAX_CLEAN_INSTR_COUNT) continue;
+
 		 /* instrument calls and returns  */
         if (instr_is_call_direct(instr)) {
 			dr_insert_call_instrumentation(drcontext, bb, instr, at_call);
@@ -1246,9 +1251,9 @@ event_basic_block(void *drcontext, void *tag, instrlist_t *bb,
 			dr_insert_clean_call(drcontext, bb, instr, taint_propagation, false, 1, 
 				OPND_CREATE_INTPTR(instr_get_app_pc(instr)));
 		} else {
-			if(instr_count < 100)
-				dr_insert_clean_call(drcontext, bb, instr, at_others, false, 1, 
-					OPND_CREATE_INTPTR(instr_get_app_pc(instr)));
+			insert_count --;
+			//dr_insert_clean_call(drcontext, bb, instr, at_others, false, 1, 
+			//		OPND_CREATE_INTPTR(instr_get_app_pc(instr)));
 		}
     }
 

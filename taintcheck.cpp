@@ -70,6 +70,8 @@ struct api_call_rule_t
 	{"MSVC*.dll",		"fread",		4, 1, 1, 2, 0, -1, 0, 1},
 	{"ws2_32.dll",		"WSARecvFrom",	9, 2, 0, 3, 0, 4, 1, 0},
 	{"ws2_32.dll",		"WSARecv",		7, 2, 0, 3, 0, 4, 1, 0},
+	{"ws2_32.dll",		"recvfrom",		4, 2, 1, 3, 0, 0, 0, 1},
+	{"ws2_32.dll",		"recv",			4, 2, 1, 3, 0, 0, 0, 1},
 };
 
 bool
@@ -1211,12 +1213,11 @@ event_basic_block(void *drcontext, void *tag, instrlist_t *bb,
 	}
 
 	for (instr = instrlist_first(bb); instr != NULL; instr = instr_get_next(instr))
-	{
-		//dr_print_instr(drcontext, f, instr, NULL);
 		instr_count++;
-	}
+	
 	dr_fprintf(f, "\nin dr_basic_block #%d (tag="PFX") esp="PFX" instr_count=%d\n", 
 			block_cnt, tag, mc.esp, instr_count);
+
 	//if(instr_count > 100)
 	//	return DR_EMIT_DEFAULT;
 	

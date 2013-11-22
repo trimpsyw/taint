@@ -1,4 +1,4 @@
-/* **********************************************************
+ï»¿/* **********************************************************
  * Copyright (c) 2013 YAO Wei.  All rights reserved.
  * **********************************************************/
 
@@ -48,28 +48,28 @@ const char* white_dll[] = {
 
 struct api_call_rule_t
 {
-	char module[64];				/* Ä£¿éÃû */
-	char name[64];					/* º¯ÊıÃû */
+	char module[64];				/* æ¨¡å—å */
+	char name[64];					/* å‡½æ•°å */
 	
-	int param_count:16;			/* º¯Êı²ÎÊı×Ü¸öÊı */
+	int param_count:16;			/* å‡½æ•°å‚æ•°æ€»ä¸ªæ•° */
 	
-	int buffer_id:8;				/* ²ÎÊıË÷Òı´Ó1¿ªÊ¼¼ÆÊı£¬0´ú±í·µ»ØÖµ */
-	int buffer_is_char:8;			/* ÊÇ·ñÎªÆÕÍ¨charÊı×é */
+	int buffer_id:8;				/* å‚æ•°ç´¢å¼•ä»1å¼€å§‹è®¡æ•°ï¼Œ0ä»£è¡¨è¿”å›å€¼ */
+	int buffer_is_char:8;			/* æ˜¯å¦ä¸ºæ™®é€šcharæ•°ç»„ */
 	
-	int size_id:8;					/* In buffer´óĞ¡ */
-	int size_is_reference:8;		/* ÊÇ·ñÎªÖ¸Õë */
+	int size_id:8;					/* In bufferå¤§å° */
+	int size_is_reference:8;		/* æ˜¯å¦ä¸ºæŒ‡é’ˆ */
 
-	int read_size_id:8;				/* ·µ»ØbufferµÄ´óĞ¡£¬ 0±íÊ¾ÔÚ·µ»ØÖµ*/
-	int read_size_is_reference:8;	/* ÊÇ·ñÎªÖ¸Õë */
+	int read_size_id:8;				/* è¿”å›bufferçš„å¤§å°ï¼Œ 0è¡¨ç¤ºåœ¨è¿”å›å€¼*/
+	int read_size_is_reference:8;	/* æ˜¯å¦ä¸ºæŒ‡é’ˆ */
 
-	int succeed_return_status;		/* º¯Êıµ÷ÓÃ³É¹¦·µ»Ø0»¹ÊÇ·Ç0*/ 
+	int succeed_return_status;		/* å‡½æ•°è°ƒç”¨æˆåŠŸè¿”å›0è¿˜æ˜¯é0*/ 
 
 }rules[] = {
-	{"MSVC*.dll",		"fgets",		3, 1, 0, 2, 0, -1, 0, 1},
-	{"Kernel32.dll",	"ReadFile",		5, 2, 0, 3, 0, 4,	1, 1},
-	{"MSVC*.dll",		"fread",		4, 1, 0, 2, 0, -1, 0, 1},
-	{"ws2_32.dll",		"WSARecvFrom",	9, 2, 1, 3, 0, 4, 1, 0},
-	{"ws2_32.dll",		"WSARecv",		7, 2, 1, 3, 0, 4, 1, 0},
+	{"MSVC*.dll",		"fgets",		3, 1, 1, 2, 0, -1, 0, 1},
+	{"Kernel32.dll",	"ReadFile",		5, 2, 1, 3, 0, 4,	1, 1},
+	{"MSVC*.dll",		"fread",		4, 1, 1, 2, 0, -1, 0, 1},
+	{"ws2_32.dll",		"WSARecvFrom",	9, 2, 0, 3, 0, 4, 1, 0},
+	{"ws2_32.dll",		"WSARecv",		7, 2, 0, 3, 0, 4, 1, 0},
 };
 
 bool
@@ -791,7 +791,7 @@ at_return(app_pc instr_addr, app_pc target_addr)
 	{
 		print_function_tables(f, "Leaving\t", funcs);
 		
-		//´ÓÄÚ²¿Ìø×ªµ½Íâ²¿°×Ãûµ¥dll,É¶ÊÂÇé¶¼²»×ö
+		//ä»å†…éƒ¨è·³è½¬åˆ°å¤–éƒ¨ç™½åå•dll,å•¥äº‹æƒ…éƒ½ä¸åš
 		if(within_whitelist(instr_addr) == false && within_whitelist(target_addr) == true)
 			;
 
@@ -940,7 +940,7 @@ taint_propagation(app_pc pc)
 	app_pc taint_addr = 0, tainting_addr = 0;
 
 #ifdef SHOW_PROPAGATION
-	//ÒÔÏÂÊÇ´òÓ¡Ô´ºÍÄ¿±êÊı
+	//ä»¥ä¸‹æ˜¯æ‰“å°æºå’Œç›®æ ‡æ•°
 	if(n1 > 0) dr_fprintf(f, "src_opnd(");
 	for(int i = 0; i < n1; i++)
 	{
@@ -951,7 +951,7 @@ taint_propagation(app_pc pc)
 		else if(opnd_is_memory_reference(src_opnd))
 			dr_fprintf(f, "mem:0x%08x", opnd_compute_address(src_opnd, &mc));
 		else if(opnd_is_pc(src_opnd))
-			dr_fprintf(f, "pc:0x%08x", opnd_get_pc(src_opnd));//Ä£¿éÄÚ²¿µ÷ÓÃ
+			dr_fprintf(f, "pc:0x%08x", opnd_get_pc(src_opnd));//æ¨¡å—å†…éƒ¨è°ƒç”¨
 		else if(opnd_is_abs_addr(src_opnd))
 			dr_fprintf(f, "abs:0x%08x", opnd_get_addr(src_opnd));
 		else if(opnd_is_immed_int(src_opnd))
@@ -1021,7 +1021,7 @@ taint_propagation(app_pc pc)
 		clear_tag_eacbdx(reg1, taint_regs);
 	}
 
-	//ÒÔÏÂÊÇÎÛµã´«²¥
+	//ä»¥ä¸‹æ˜¯æ±¡ç‚¹ä¼ æ’­
 	if(n1 && n2)
 	{
 		int type = -1;
@@ -1055,7 +1055,7 @@ taint_propagation(app_pc pc)
 
 		opnd_t dst_opnd = instr_get_dst(&instr, 0);
 
-		if(src_tainted)//ÎÛÈ¾±ê¼Ç
+		if(src_tainted)//æ±¡æŸ“æ ‡è®°
 		{
 			dr_fprintf(f, "\t$$$$ taint ");
 
@@ -1087,7 +1087,7 @@ taint_propagation(app_pc pc)
 
 			dr_fprintf(f, " $$$$\n");
 		} 
-		else//Çå³ı±ê¼Ç
+		else//æ¸…é™¤æ ‡è®°
 		{
 			if(opnd_is_reg(dst_opnd))
 			{
@@ -1119,7 +1119,7 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 	int& read_size = data->read_size;
 	memory_list& taint_memory = data->taint_memory;
 	
-	//ÔÚ·µ»ØµØÖ·´¦´¦Àíº¯Êıµ÷ÓÃ½á¹û
+	//åœ¨è¿”å›åœ°å€å¤„å¤„ç†å‡½æ•°è°ƒç”¨ç»“æœ
 	app_pc value;
 	size_t size;
 
@@ -1165,14 +1165,14 @@ event_basic_block(void *drcontext, void *tag, instrlist_t *bb,
 	dr_get_mcontext(drcontext, &mc);
 	block_cnt ++;
 
-	//Ìø¹ı°×Ãûµ¥
+	//è·³è¿‡ç™½åå•
 	if(within_whitelist((app_pc)tag))
 		return DR_EMIT_DEFAULT;
 
-	//¼ì²âµ½¹ıÂËº¯Êıµ÷ÓÃ
+	//æ£€æµ‹åˆ°è¿‡æ»¤å‡½æ•°è°ƒç”¨
 	if(data->untrusted_function_calling)
 	{
-		if(!is_return) //×¼±¸µ÷ÓÃ¸Ãº¯ÊıÁË£¬Ö±½Ó¸Ãº¯ÊıÄÚ²¿µÄÒ»ÇĞÏ¸½Ú
+		if(!is_return) //å‡†å¤‡è°ƒç”¨è¯¥å‡½æ•°äº†ï¼Œç›´æ¥è¯¥å‡½æ•°å†…éƒ¨çš„ä¸€åˆ‡ç»†èŠ‚
 			return DR_EMIT_DEFAULT;
 
 		taint_seed((app_pc)tag, drcontext, &mc);

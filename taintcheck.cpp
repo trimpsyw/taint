@@ -15,7 +15,7 @@
 #include <string>
 
 #define SHOW_SYM
-#define SHOW_INSTR
+//#define SHOW_INSTR
 //#define SHOW_PROPAGATION
 //#define SHOW_FUNCTION_TREE
 
@@ -309,17 +309,17 @@ typedef struct thread_data_t
 {
 	file_t f;
 
-	int untrusted_function_calling;
+	int untrusted_function_calling;	/* 是否正在进行调用非信任函数 */
 	app_pc call_address, into_address, return_address;
-	int buffer_idx;
-	int char_buffer;
-	int size_id;
-	int read_size_id;
-	int read_size_ref;
-	int succeed_return_status;
-	app_pc read_size_offset;
-	app_pc read_buffer;
-	int read_size;
+	int buffer_idx;				/* 索引：缓冲区*/
+	int char_buffer;			/* 是否为普通字符串 */
+	int size_id;				/* 索引：In Buffer的大小 */
+	int read_size_id;			/* 索引：Out Buffer的大小 */
+	int read_size_ref;			/* 是否为指针 */
+	int succeed_return_status;	/* 调用返回0/非0*/
+	app_pc read_size_offset;	/* 相对于esp的偏移量 */
+	app_pc read_buffer;			/* 最终的缓冲区地址 */
+	int read_size;				/* 最终的缓冲区大小 */
 
 	memory_list taint_memory;
 	byte taint_regs[DR_REG_INVALID];
@@ -744,10 +744,10 @@ at_call(app_pc instr_addr, app_pc target_addr)
 			read_size_offset = (app_pc)mc.esp+(read_size_id-1)*4;
 
 			dr_safe_read(boffset, 4, &read_buffer, &size);
-			dr_fprintf(f, "Buffer address "PFX"\n", read_buffer);
+			dr_fprintf(f, "[In] Buffer address "PFX"\n", read_buffer);
 
 			dr_safe_read(soffset, 4, &read_size, &size);
-			dr_fprintf(f, "Buffer size "PFX"\n", read_size);
+			dr_fprintf(f, "[In] Buffer size "PFX"\n", read_size);
 		} 
 	}
 
@@ -1114,38 +1114,70 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 	int& read_size_id = data->read_size_id;
 	int& read_size_ref = data->read_size_ref;
 	int& return_status = data->succeed_return_status;
+	int& char_buffer = data->char_buffer;
 	app_pc& read_size_offset = data->read_size_offset;
 	app_pc& read_buffer = data->read_buffer;
 	int& read_size = data->read_size;
+	int in_size = data->read_size;
 	memory_list& taint_memory = data->taint_memory;
 	
-	//在返回地址处处理函数调用结果
-	app_pc value;
-	size_t size;
-
 	dr_fprintf(f, "Function return status "PFX "\n",mc->eax);
+	
+	//通过返回值判断函数调用是否失败
+	if((return_status > 0 && mc->eax <= 0) || (return_status == 0 && mc->eax != 0))
+	{
+		dr_fprintf(f, "Failed to call function\n");
+		untrusted_function_calling = 0;
+		return;
+	}
 
+	int value;
+	size_t size;
+		
 	if(read_size_id >= 0)
 	{
 		if(read_size_id == 0)
-			value = (app_pc)mc->eax;
+			value = mc->eax;
 		else
 			dr_safe_read(read_size_offset, 4, &value, &size);
 
 		if(read_size_ref)
-			dr_safe_read(value, 4, &value, &size);
-		
-		read_size = (int)value;
+			dr_safe_read((void *)value, 4, &value, &size);
+
+		read_size = value;
 	}
 
-	if((return_status && mc->eax > 0) || (return_status == 0 && mc->eax == 0))
+	if(char_buffer)//普通的字符串，无需特别处理
 	{
-		dr_fprintf(f, "Read Size "PFX"\n", read_size);
 		taint_memory.insert_sort(range(read_buffer, read_buffer+read_size));
+		dr_fprintf(f, "[Out] Read Size "PFX"\n", read_size);
 	}
 	else
 	{
-		dr_fprintf(f, "Failed to call function\n");
+		//处理其他缓冲区，这里处理_WSABUF的情况
+		//struct WSABUF { ULONG len; CHAR *buf; }
+		size_t n = 0; 
+		app_pc addr;
+		for(int i = 0; i < in_size; i++) //in_size一般为2，
+		{
+			dr_safe_read(read_buffer+i*8, 4, &value, &size);
+			if(value <= 0) continue;
+			if(i > 0)	value = read_size - n;
+
+			dr_fprintf(f, "[Out] len "PFX"\n", value);
+
+			n += (size_t)value;
+
+			dr_safe_read(read_buffer+i*8+4, 4, &addr, &size);
+			dr_fprintf(f, "[Out] buf "PFX"\n", addr);
+
+			if(i > 0)
+			{
+				dr_fprintf(f, "[Out] Taint memory "PFX" %d\n", addr, value);
+				taint_memory.insert_sort(range(addr, addr+value));
+			}
+
+		}
 	}
 
 	untrusted_function_calling = 0;
@@ -1176,7 +1208,7 @@ event_basic_block(void *drcontext, void *tag, instrlist_t *bb,
 			return DR_EMIT_DEFAULT;
 
 		taint_seed((app_pc)tag, drcontext, &mc);
-	}//*/
+	}
 
 	for (instr = instrlist_first(bb); instr != NULL; instr = instr_get_next(instr))
 	{

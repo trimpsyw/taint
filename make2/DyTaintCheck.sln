@@ -1,48 +1,20 @@
 Microsoft Visual Studio Solution File, Format Version 10.00
 # Visual Studio 2008
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "ALL_BUILD", "ALL_BUILD.vcproj", "{9B5A6F47-B8B9-4C5A-AC0E-B0DDC472E5CB}"
-	ProjectSection(ProjectDependencies) = postProject
-		{353D899D-DB7D-4C79-B0AC-7EA5810CEE11} = {353D899D-DB7D-4C79-B0AC-7EA5810CEE11}
-		{BDF2D1FC-FA1D-439E-AFB1-B7AE05DBBA4C} = {BDF2D1FC-FA1D-439E-AFB1-B7AE05DBBA4C}
-		{BE3EEB34-E2C3-47FA-BEAD-0AAE41EC76BA} = {BE3EEB34-E2C3-47FA-BEAD-0AAE41EC76BA}
-	EndProjectSection
-EndProject
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "INSTALL", "INSTALL.vcproj", "{2E5D1111-637B-4548-BD23-C003809A65C7}"
-	ProjectSection(ProjectDependencies) = postProject
-		{9B5A6F47-B8B9-4C5A-AC0E-B0DDC472E5CB} = {9B5A6F47-B8B9-4C5A-AC0E-B0DDC472E5CB}
-	EndProjectSection
-EndProject
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "ZERO_CHECK", "ZERO_CHECK.vcproj", "{353D899D-DB7D-4C79-B0AC-7EA5810CEE11}"
-	ProjectSection(ProjectDependencies) = postProject
-	EndProjectSection
-EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "drtaintcheck", "drtaintcheck.vcproj", "{BDF2D1FC-FA1D-439E-AFB1-B7AE05DBBA4C}"
-	ProjectSection(ProjectDependencies) = postProject
-		{353D899D-DB7D-4C79-B0AC-7EA5810CEE11} = {353D899D-DB7D-4C79-B0AC-7EA5810CEE11}
-	EndProjectSection
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "taintchecklib", "taintchecklib.vcproj", "{BE3EEB34-E2C3-47FA-BEAD-0AAE41EC76BA}"
-	ProjectSection(ProjectDependencies) = postProject
-		{353D899D-DB7D-4C79-B0AC-7EA5810CEE11} = {353D899D-DB7D-4C79-B0AC-7EA5810CEE11}
-	EndProjectSection
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Release|Win32 = Release|Win32
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
-		{9B5A6F47-B8B9-4C5A-AC0E-B0DDC472E5CB}.Release|Win32.ActiveCfg = Release|Win32
-		{9B5A6F47-B8B9-4C5A-AC0E-B0DDC472E5CB}.Release|Win32.Build.0 = Release|Win32
-		{2E5D1111-637B-4548-BD23-C003809A65C7}.Release|Win32.ActiveCfg = Release|Win32
-		{353D899D-DB7D-4C79-B0AC-7EA5810CEE11}.Release|Win32.ActiveCfg = Release|Win32
-		{353D899D-DB7D-4C79-B0AC-7EA5810CEE11}.Release|Win32.Build.0 = Release|Win32
 		{BDF2D1FC-FA1D-439E-AFB1-B7AE05DBBA4C}.Release|Win32.ActiveCfg = Release|Win32
 		{BDF2D1FC-FA1D-439E-AFB1-B7AE05DBBA4C}.Release|Win32.Build.0 = Release|Win32
 		{BE3EEB34-E2C3-47FA-BEAD-0AAE41EC76BA}.Release|Win32.ActiveCfg = Release|Win32
 		{BE3EEB34-E2C3-47FA-BEAD-0AAE41EC76BA}.Release|Win32.Build.0 = Release|Win32
 	EndGlobalSection
-	GlobalSection(ExtensibilityGlobals) = postSolution
-	EndGlobalSection
-	GlobalSection(ExtensibilityAddIns) = postSolution
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
 	EndGlobalSection
 EndGlobal

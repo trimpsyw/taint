@@ -1,20 +1,14 @@
-<?xml version="1.0" encoding="Windows-1252"?>
+<?xml version="1.0" encoding = "Windows-1252"?>
 <VisualStudioProject
 	ProjectType="Visual C++"
 	Version="9.00"
 	Name="drtaintcheck"
 	ProjectGUID="{BDF2D1FC-FA1D-439E-AFB1-B7AE05DBBA4C}"
-	RootNamespace="drtaintcheck"
-	Keyword="Win32Proj"
-	TargetFrameworkVersion="0"
-	>
+	Keyword="Win32Proj">
 	<Platforms>
 		<Platform
-			Name="Win32"
-		/>
+			Name="Win32"/>
 	</Platforms>
-	<ToolFiles>
-	</ToolFiles>
 	<Configurations>
 		<Configuration
 			Name="Release|Win32"
@@ -22,134 +16,80 @@
 			IntermediateDirectory="drtaintcheck.dir\Release"
 			ConfigurationType="1"
 			UseOfMFC="0"
-			ATLMinimizesCRunTimeLibraryUsage="false"
-			CharacterSet="2"
-			>
+			ATLMinimizesCRunTimeLibraryUsage="FALSE"
+			CharacterSet="2">
 			<Tool
-				Name="VCPreBuildEventTool"
-			/>
+				Name="VCCLCompilerTool"
+				AdditionalIncludeDirectories="..\..\cmake\..\include;..\..\cmake\..\ext\include;"
+				CompileAs="1"
+				ExceptionHandling="0"
+				InlineFunctionExpansion="2"
+				Optimization="2"
+				RuntimeLibrary="2"
+				WarningLevel="3"
+				PreprocessorDefinitions="WIN32;_WINDOWS;NDEBUG;WIN32;_WINDOWS;X86_32;WINDOWS;DYNAMORIO_STANDALONE;SHOW_RESULTS;SHOW_SYMBOLS;_CRT_SECURE_NO_WARNINGS;CMAKE_INTDIR=\&quot;Release\&quot;"
+				AssemblerListingLocation="Release"
+				ObjectFile="$(IntDir)\"
+				ProgramDataBaseFileName="..\..\samples\make2\bin/drtaintcheck.pdb"
+/>
 			<Tool
-				Name="VCCustomBuildTool"
-			/>
+				Name="VCCustomBuildTool"/>
 			<Tool
-				Name="VCXMLDataGeneratorTool"
-			/>
-			<Tool
-				Name="VCWebServiceProxyGeneratorTool"
-			/>
+				Name="VCResourceCompilerTool"
+				AdditionalIncludeDirectories="..\..\cmake\..\include;..\..\cmake\..\ext\include;"
+				PreprocessorDefinitions="WIN32;_WINDOWS;NDEBUG;WIN32;_WINDOWS;X86_32;WINDOWS;DYNAMORIO_STANDALONE;SHOW_RESULTS;SHOW_SYMBOLS;_CRT_SECURE_NO_WARNINGS;CMAKE_INTDIR=\&quot;Release\&quot;"/>
 			<Tool
 				Name="VCMIDLTool"
-				AdditionalIncludeDirectories="..\..\\cmake\..\include;..\..\\cmake\..\ext\include;"
-				MkTypLibCompatible="false"
+				AdditionalIncludeDirectories="..\..\cmake\..\include;..\..\cmake\..\ext\include;"
+				MkTypLibCompatible="FALSE"
 				TargetEnvironment="1"
-				GenerateStublessProxies="true"
+				GenerateStublessProxies="TRUE"
 				TypeLibraryName="$(InputName).tlb"
 				OutputDirectory="$(IntDir)"
 				HeaderFileName="$(InputName).h"
 				DLLDataFileName=""
 				InterfaceIdentifierFileName="$(InputName)_i.c"
-				ProxyFileName="$(InputName)_p.c"
-			/>
+				ProxyFileName="$(InputName)_p.c"/>
 			<Tool
-				Name="VCCLCompilerTool"
-				Optimization="2"
-				InlineFunctionExpansion="2"
-				AdditionalIncludeDirectories="..\..\\cmake\..\include;..\..\\cmake\..\ext\include;"
-				PreprocessorDefinitions="WIN32;_WINDOWS;NDEBUG;WIN32;_WINDOWS;X86_32;WINDOWS;DYNAMORIO_STANDALONE;SHOW_RESULTS;SHOW_SYMBOLS;_CRT_SECURE_NO_WARNINGS;CMAKE_INTDIR=\&quot;Release\&quot;"
-				ExceptionHandling="0"
-				RuntimeLibrary="2"
-				AssemblerListingLocation="Release"
-				ObjectFile="$(IntDir)\"
-				ProgramDataBaseFileName="..\..\\samples\make2\bin/drtaintcheck.pdb"
-				WarningLevel="3"
-				CompileAs="1"
-			/>
-			<Tool
-				Name="VCManagedResourceCompilerTool"
-			/>
-			<Tool
-				Name="VCResourceCompilerTool"
-				PreprocessorDefinitions="WIN32;_WINDOWS;NDEBUG;WIN32;_WINDOWS;X86_32;WINDOWS;DYNAMORIO_STANDALONE;SHOW_RESULTS;SHOW_SYMBOLS;_CRT_SECURE_NO_WARNINGS;CMAKE_INTDIR=\&quot;Release\&quot;"
-				AdditionalIncludeDirectories="..\..\\cmake\..\include;..\..\\cmake\..\ext\include;"
-			/>
+				Name="VCPreBuildEventTool"/>
 			<Tool
 				Name="VCPreLinkEventTool"
-				CommandLine=""
-			/>
+CommandLine="D:\Software\Dev\cmake-2.8.11.2-win32-x86\bin\cmake.exe -E make_directory E:/Develop/DynamoRIO-Windows-4.1.0-8/samples/make2/bin/release&#x0D;&#x0A;if errorlevel 1 goto :VCReportError"/>
+			<Tool
+				Name="VCPostBuildEventTool"/>
 			<Tool
 				Name="VCLinkerTool"
 				LinkLibraryDependencies="false"
 				AdditionalOptions=" /machine:X86 /nodefaultlib"
-				AdditionalDependencies="$(NOINHERIT) kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib libcmt.lib ..\..\\lib32\release\dynamorio.lib ..\..\\lib32\drinjectlib.lib ..\..\\lib32\drconfiglib.lib libcmt.lib ..\..\\lib32\release\drdecode.lib ..\..\\lib32\ntdll_imports.lib kernel32.lib advapi32.lib imagehlp.lib "
-				OutputFile="..\..\\samples\make2\bin\drtaintcheck.exe"
+				AdditionalDependencies="$(NOINHERIT) kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib libcmt.lib ..\..\lib32\release\dynamorio.lib ..\..\lib32\drinjectlib.lib ..\..\lib32\drconfiglib.lib libcmt.lib ..\..\lib32\release\drdecode.lib ..\..\lib32\ntdll_imports.lib kernel32.lib advapi32.lib imagehlp.lib "
+				OutputFile="..\..\samples\make2\bin\drtaintcheck.exe"
 				Version="0.0"
 				LinkIncremental="1"
 				AdditionalLibraryDirectories=""
-				ProgramDatabaseFile="..\..\\samples\make2\bin/drtaintcheck.pdb"
+				ProgramDatabaseFile="..\..\samples\make2\bin/drtaintcheck.pdb"
 				SubSystem="1"
-				ImportLibrary="..\..\\samples\make2\bin\release\drtaintcheck.lib"
-			/>
-			<Tool
-				Name="VCALinkTool"
-			/>
-			<Tool
-				Name="VCManifestTool"
-			/>
-			<Tool
-				Name="VCXDCMakeTool"
-			/>
-			<Tool
-				Name="VCBscMakeTool"
-			/>
-			<Tool
-				Name="VCFxCopTool"
-			/>
-			<Tool
-				Name="VCAppVerifierTool"
-			/>
-			<Tool
-				Name="VCPostBuildEventTool"
-			/>
+				ImportLibrary="..\..\samples\make2\bin\release\drtaintcheck.lib"/>
 		</Configuration>
 	</Configurations>
-	<References>
-	</References>
 	<Files>
 		<Filter
 			Name="Source Files"
-			>
+			Filter="">
 			<File
-				RelativePath="..\..\\samples\drtaintcheck_frontend.c"
-				>
+				RelativePath="..\..\samples\drtaintcheck_frontend.c">
 				<FileConfiguration
-					Name="Release|Win32"
-					>
+					Name="Release|Win32">
 					<Tool
-						Name="VCCLCompilerTool"
-						Optimization="2"
-						RuntimeLibrary="0"
-						BufferSecurityCheck="false"
-						WarningLevel="3"
-						DisableSpecificWarnings="4100;4127;4054"
+					Name="VCCLCompilerTool"
+					BufferSecurityCheck="FALSE"
+					DisableSpecificWarnings="4100;4127;4054"
+					Optimization="2"
+					RuntimeLibrary="0"
+					WarningLevel="3"
 					/>
 				</FileConfiguration>
 			</File>
 		</Filter>
-		<File
-			RelativePath="..\..\\samples\CMakeLists.txt"
-			>
-			<FileConfiguration
-				Name="Release|Win32"
-				>
-				<Tool
-					Name="VCCustomBuildTool"
-					Description="Building Custom Rule ..\../samples/CMakeLists.txt"
-					CommandLine="D:\Software\Dev\cmake-2.8.11.2-win32-x86\bin\cmake.exe -H..\../samples -B..\../samples/make2 --check-stamp-file ..\..\\samples\make2\CMakeFiles\generate.stamp&#x0D;&#x0A;if errorlevel 1 goto :VCReportError&#x0D;&#x0A;"
-					AdditionalDependencies="..\..\\samples\CMakeLists.txt;..\..\\samples\make2\CMakeFiles\2.8.11.2\CMakeSystem.cmake;..\..\\samples\make2\CMakeFiles\2.8.11.2\CMakeCCompiler.cmake;..\..\\samples\make2\CMakeFiles\2.8.11.2\CMakeCXXCompiler.cmake;D:\Software\Dev\cmake-2.8.11.2-win32-x86\share\cmake-2.8\Modules\CMakeSystemSpecificInformation.cmake;D:\Software\Dev\cmake-2.8.11.2-win32-x86\share\cmake-2.8\Modules\CMakeGenericSystem.cmake;D:\Software\Dev\cmake-2.8.11.2-win32-x86\share\cmake-2.8\Modules\Platform\Windows.cmake;D:\Software\Dev\cmake-2.8.11.2-win32-x86\share\cmake-2.8\Modules\Platform\WindowsPaths.cmake;D:\Software\Dev\cmake-2.8.11.2-win32-x86\share\cmake-2.8\Modules\CMakeCInformation.cmake;D:\Software\Dev\cmake-2.8.11.2-win32-x86\share\cmake-2.8\Modules\Platform\Windows-MSVC-C.cmake;D:\Software\Dev\cmake-2.8.11.2-win32-x86\share\cmake-2.8\Modules\Platform\Windows-MSVC.cmake;..\..\\samples\make2\CMakeFiles\2.8.11.2\CMakeRCCompiler.cmake;D:\Software\Dev\cmake-2.8.11.2-win32-x86\share\cmake-2.8\Modules\CMakeRCInformation.cmake;D:\Software\Dev\cmake-2.8.11.2-win32-x86\share\cmake-2.8\Modules\CMakeCommonLanguageInclude.cmake;D:\Software\Dev\cmake-2.8.11.2-win32-x86\share\cmake-2.8\Modules\CMakeCXXInformation.cmake;D:\Software\Dev\cmake-2.8.11.2-win32-x86\share\cmake-2.8\Modules\Platform\Windows-MSVC-CXX.cmake;D:\Software\Dev\cmake-2.8.11.2-win32-x86\share\cmake-2.8\Modules\Platform\Windows-MSVC.cmake;D:\Software\Dev\cmake-2.8.11.2-win32-x86\share\cmake-2.8\Modules\CMakeCommonLanguageInclude.cmake;..\..\\cmake\DynamoRIOConfigVersion.cmake;..\..\\cmake\DynamoRIOConfig.cmake;..\..\\cmake\DynamoRIOTarget32.cmake;..\..\\cmake\DynamoRIOTarget32-debug.cmake;..\..\\cmake\DynamoRIOTarget32-release.cmake;..\..\\samples\CMakeLists.txt;"
-					Outputs="..\..\\samples\make2\CMakeFiles\generate.stamp"
-				/>
-			</FileConfiguration>
-		</File>
 	</Files>
 	<Globals>
 	</Globals>

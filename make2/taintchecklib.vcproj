@@ -20,7 +20,7 @@
 			CharacterSet="2">
 			<Tool
 				Name="VCCLCompilerTool"
-				AdditionalIncludeDirectories="E:\Develop\DynamoRIO-Windows-4.1.0-8\cmake\..\include;E:\Develop\DynamoRIO-Windows-4.1.0-8\cmake\..\ext\include;"
+				AdditionalIncludeDirectories="..\..\cmake\..\include;..\..\cmake\..\ext\include;"
 				CompileAs="2"
 				ExceptionHandling="1"
 				InlineFunctionExpansion="2"
@@ -31,17 +31,17 @@
 				PreprocessorDefinitions="WIN32;_WINDOWS;NDEBUG;WIN32;_WINDOWS;X86_32;WINDOWS;SHOW_RESULTS;SHOW_SYMBOLS;_CRT_SECURE_NO_WARNINGS;CMAKE_INTDIR=\&quot;Release\&quot;;taintchecklib_EXPORTS"
 				AssemblerListingLocation="Release"
 				ObjectFile="$(IntDir)\"
-				ProgramDataBaseFileName="E:\Develop\DynamoRIO-Windows-4.1.0-8\samples\make2\bin\release/taintchecklib.pdb"
+				ProgramDataBaseFileName="..\..\samples\make2\bin\release/taintchecklib.pdb"
 />
 			<Tool
 				Name="VCCustomBuildTool"/>
 			<Tool
 				Name="VCResourceCompilerTool"
-				AdditionalIncludeDirectories="E:\Develop\DynamoRIO-Windows-4.1.0-8\cmake\..\include;E:\Develop\DynamoRIO-Windows-4.1.0-8\cmake\..\ext\include;"
+				AdditionalIncludeDirectories="..\..\cmake\..\include;..\..\cmake\..\ext\include;"
 				PreprocessorDefinitions="WIN32;_WINDOWS;NDEBUG;WIN32;_WINDOWS;X86_32;WINDOWS;SHOW_RESULTS;SHOW_SYMBOLS;_CRT_SECURE_NO_WARNINGS;CMAKE_INTDIR=\&quot;Release\&quot;;taintchecklib_EXPORTS"/>
 			<Tool
 				Name="VCMIDLTool"
-				AdditionalIncludeDirectories="E:\Develop\DynamoRIO-Windows-4.1.0-8\cmake\..\include;E:\Develop\DynamoRIO-Windows-4.1.0-8\cmake\..\ext\include;"
+				AdditionalIncludeDirectories="..\..\cmake\..\include;..\..\cmake\..\ext\include;"
 				MkTypLibCompatible="FALSE"
 				TargetEnvironment="1"
 				GenerateStublessProxies="TRUE"
@@ -61,33 +61,21 @@
 				Name="VCLinkerTool"
 				LinkLibraryDependencies="false"
 				AdditionalOptions=" /machine:X86 /nodefaultlib:libcmt"
-				AdditionalDependencies="$(NOINHERIT) kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib libcpmt.lib libcmt.lib E:\Develop\DynamoRIO-Windows-4.1.0-8\lib32\release\dynamorio.lib E:\Develop\DynamoRIO-Windows-4.1.0-8\ext\lib32\release\drmgr.lib E:\Develop\DynamoRIO-Windows-4.1.0-8\ext\lib32\release\drsyms.lib E:\Develop\DynamoRIO-Windows-4.1.0-8\ext\lib32\release\drx.lib E:\Develop\DynamoRIO-Windows-4.1.0-8\lib32\release\dynamorio.lib "
-				OutputFile="E:\Develop\DynamoRIO-Windows-4.1.0-8\samples\make2\bin\release\taintchecklib.dll"
+				AdditionalDependencies="$(NOINHERIT) kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib libcpmt.lib libcmt.lib ..\..\lib32\release\dynamorio.lib ..\..\ext\lib32\release\drmgr.lib ..\..\ext\lib32\release\drsyms.lib ..\..\ext\lib32\release\drx.lib ..\..\lib32\release\dynamorio.lib "
+				OutputFile="..\..\samples\make2\bin\release\taintchecklib.dll"
 				Version="0.0"
 				LinkIncremental="1"
 				AdditionalLibraryDirectories=""
-				ProgramDatabaseFile="E:\Develop\DynamoRIO-Windows-4.1.0-8\samples\make2\bin\release\taintchecklib.pdb"
-				ImportLibrary="E:\Develop\DynamoRIO-Windows-4.1.0-8\samples\make2\bin\release\taintchecklib.lib"/>
+				ProgramDatabaseFile="..\..\samples\make2\bin\release\taintchecklib.pdb"
+				ImportLibrary="..\..\samples\make2\bin\release\taintchecklib.lib"/>
 		</Configuration>
 	</Configurations>
 	<Files>
-			<File
-				RelativePath="E:\Develop\DynamoRIO-Windows-4.1.0-8\samples\CMakeLists.txt">
-				<FileConfiguration
-					Name="Release|Win32">
-					<Tool
-					Name="VCCustomBuildTool"
-					Description="Building Custom Rule E:/Develop/DynamoRIO-Windows-4.1.0-8/samples/CMakeLists.txt"
-					CommandLine="D:\Software\Dev\cmake-2.8.11.2-win32-x86\bin\cmake.exe -HE:/Develop/DynamoRIO-Windows-4.1.0-8/samples -BE:/Develop/DynamoRIO-Windows-4.1.0-8/samples/make2 --check-stamp-file E:\Develop\DynamoRIO-Windows-4.1.0-8\samples\make2\CMakeFiles\generate.stamp&#x0D;&#x0A;if errorlevel 1 goto :VCReportError"
-					AdditionalDependencies="E:\Develop\DynamoRIO-Windows-4.1.0-8\samples\CMakeLists.txt;E:\Develop\DynamoRIO-Windows-4.1.0-8\samples\make2\CMakeFiles\2.8.11.2\CMakeSystem.cmake;E:\Develop\DynamoRIO-Windows-4.1.0-8\samples\make2\CMakeFiles\2.8.11.2\CMakeCCompiler.cmake;E:\Develop\DynamoRIO-Windows-4.1.0-8\samples\make2\CMakeFiles\2.8.11.2\CMakeCXXCompiler.cmake;D:\Software\Dev\cmake-2.8.11.2-win32-x86\share\cmake-2.8\Modules\CMakeSystemSpecificInformation.cmake;D:\Software\Dev\cmake-2.8.11.2-win32-x86\share\cmake-2.8\Modules\CMakeGenericSystem.cmake;D:\Software\Dev\cmake-2.8.11.2-win32-x86\share\cmake-2.8\Modules\Platform\Windows.cmake;D:\Software\Dev\cmake-2.8.11.2-win32-x86\share\cmake-2.8\Modules\Platform\WindowsPaths.cmake;D:\Software\Dev\cmake-2.8.11.2-win32-x86\share\cmake-2.8\Modules\CMakeCInformation.cmake;D:\Software\Dev\cmake-2.8.11.2-win32-x86\share\cmake-2.8\Modules\Platform\Windows-MSVC-C.cmake;D:\Software\Dev\cmake-2.8.11.2-win32-x86\share\cmake-2.8\Modules\Platform\Windows-MSVC.cmake;E:\Develop\DynamoRIO-Windows-4.1.0-8\samples\make2\CMakeFiles\2.8.11.2\CMakeRCCompiler.cmake;D:\Software\Dev\cmake-2.8.11.2-win32-x86\share\cmake-2.8\Modules\CMakeRCInformation.cmake;D:\Software\Dev\cmake-2.8.11.2-win32-x86\share\cmake-2.8\Modules\CMakeCommonLanguageInclude.cmake;D:\Software\Dev\cmake-2.8.11.2-win32-x86\share\cmake-2.8\Modules\CMakeCXXInformation.cmake;D:\Software\Dev\cmake-2.8.11.2-win32-x86\share\cmake-2.8\Modules\Platform\Windows-MSVC-CXX.cmake;D:\Software\Dev\cmake-2.8.11.2-win32-x86\share\cmake-2.8\Modules\Platform\Windows-MSVC.cmake;D:\Software\Dev\cmake-2.8.11.2-win32-x86\share\cmake-2.8\Modules\CMakeCommonLanguageInclude.cmake;E:\Develop\DynamoRIO-Windows-4.1.0-8\cmake\DynamoRIOConfigVersion.cmake;E:\Develop\DynamoRIO-Windows-4.1.0-8\cmake\DynamoRIOConfig.cmake;E:\Develop\DynamoRIO-Windows-4.1.0-8\cmake\DynamoRIOTarget32.cmake;E:\Develop\DynamoRIO-Windows-4.1.0-8\cmake\DynamoRIOTarget32-debug.cmake;E:\Develop\DynamoRIO-Windows-4.1.0-8\cmake\DynamoRIOTarget32-release.cmake;E:\Develop\DynamoRIO-Windows-4.1.0-8\samples\CMakeLists.txt;"
-					Outputs="E:\Develop\DynamoRIO-Windows-4.1.0-8\samples\make2\CMakeFiles\generate.stamp"/>
-				</FileConfiguration>
-			</File>
 		<Filter
 			Name="Source Files"
 			Filter="">
 			<File
-				RelativePath="E:\Develop\DynamoRIO-Windows-4.1.0-8\samples\taintcheck.cpp">
+				RelativePath="..\..\samples\taintcheck.cpp">
 				<FileConfiguration
 					Name="Release|Win32">
 					<Tool

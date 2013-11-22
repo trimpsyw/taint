@@ -1138,7 +1138,7 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 		read_size = (int)value;
 	}
 
-	if((return_status && mc->eax) || (return_status == 0 && mc->eax == 0))
+	if((return_status && mc->eax > 0) || (return_status == 0 && mc->eax == 0))
 	{
 		dr_fprintf(f, "Read Size "PFX"\n", read_size);
 		taint_memory.insert_sort(range(read_buffer, read_buffer+read_size));

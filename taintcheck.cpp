@@ -74,6 +74,8 @@ struct api_call_rule_t
 	{"ws2_32.dll",		"WSARecv",		7, 2, 0, 3, 0, 4, 1, 0},
 	{"ws2_32.dll",		"recvfrom",		4, 2, 1, 3, 0, 0, 0, 1},
 	{"ws2_32.dll",		"recv",			4, 2, 1, 3, 0, 0, 0, 1},
+	{"wsock32.dll",		"recvfrom",		4, 2, 1, 3, 0, 0, 0, 1},
+	{"wsock32.dll",		"recv",			4, 2, 1, 3, 0, 0, 0, 1},
 };
 
 bool
@@ -325,6 +327,8 @@ typedef struct thread_data_t
 	app_pc read_buffer;			/* 最终的缓冲区地址 */
 	int read_size;				/* 最终的缓冲区大小 */
 
+	int instr_count;			/* 指令块计数 */
+
 	memory_list taint_memory;
 	byte taint_regs[DR_REG_INVALID];
 
@@ -370,6 +374,7 @@ static dr_emit_flags_t event_basic_block(void *drcontext, void *tag, instrlist_t
                                          bool for_trace, bool translating);
 static void event_module_load(void *drcontext, const module_data_t *info, bool loaded);
 
+static void taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc);
 
 static bool
 opcode_is_arith(int opc)
@@ -556,7 +561,6 @@ print_address(file_t f, app_pc addr, const char *prefix, char* function = NULL, 
         modname = "<noname>";
     
 	if (symres == DRSYM_SUCCESS || symres == DRSYM_ERROR_LINE_NOT_AVAILABLE) {
-
 #ifdef SHOW_SYM
        dr_fprintf(f, "%s "PFX" %s:%s\n", prefix, addr, modname, sym.name);
 #endif
@@ -782,7 +786,17 @@ at_return(app_pc instr_addr, app_pc target_addr)
 	thread_data* data = (thread_data*)dr_get_tls_field(drcontext);
 	int& untrusted_function_calling = data->untrusted_function_calling;
 
-	if(untrusted_function_calling) return;
+	if(untrusted_function_calling) 
+	{
+		if(data->return_address == target_addr)
+		{
+			dr_mcontext_t mc = {sizeof(mc),DR_MC_ALL};
+			dr_get_mcontext(drcontext, &mc);
+			taint_seed(target_addr, drcontext, &mc);
+		}
+		return;
+	}
+
 
 	file_t f = data->f;
 	function_tables& funcs = data->funcs;
@@ -1162,7 +1176,7 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 		//struct WSABUF { ULONG len; CHAR *buf; }
 		size_t n = 0; 
 		app_pc addr;
-		for(int i = 0; i < in_size; i++) //in_size一般为2，
+		for(int i = 0; i < in_size; i++) //in_size UDP一般为2，TCP为1
 		{
 			dr_safe_read(read_buffer+i*8, 4, &value, &size);
 			if(value <= 0) continue;
@@ -1175,7 +1189,6 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 			dr_safe_read(read_buffer+i*8+4, 4, &addr, &size);
 			dr_fprintf(f, "[Out] buf "PFX"\n", addr);
 
-			if(i > 0)
 			{
 				dr_fprintf(f, "[Out] Taint memory "PFX" %d\n", addr, value);
 				taint_memory.insert_sort(range(addr, addr+value));
@@ -1192,9 +1205,9 @@ event_basic_block(void *drcontext, void *tag, instrlist_t *bb,
                   bool for_trace, bool translating)
 {
     instr_t *instr;
-	static int block_cnt = 0;
 	int instr_count = 0;
 	thread_data* data = (thread_data*)dr_get_tls_field(drcontext);
+	int& block_cnt = data->instr_count;
 	file_t f = data->f;
 	dr_mcontext_t mc = {sizeof(mc),DR_MC_ALL};
 	bool is_return = data->return_address == (app_pc)tag;
@@ -1202,33 +1215,27 @@ event_basic_block(void *drcontext, void *tag, instrlist_t *bb,
 	block_cnt ++;
 	int insert_count = 0;
 
-	//跳过白名单
-	if(within_whitelist((app_pc)tag))
+	//如果没有调用可疑函数，则可以直接跳过白名单
+	if(data->untrusted_function_calling == 0 && within_whitelist((app_pc)tag))
 		return DR_EMIT_DEFAULT;
 
-	//检测到过滤函数调用
-	if(data->untrusted_function_calling)
-	{
-		if(!is_return) //准备调用该函数了，直接该函数内部的一切细节
-			return DR_EMIT_DEFAULT;
-
+	//正在调用了可疑函数，可以从两个地方获取函数返回结果
+	//1 .在该函数return时候
+	//2. 在basic block开始处检测
+	if(data->untrusted_function_calling && is_return)
 		taint_seed((app_pc)tag, drcontext, &mc);
-	}
-
+	
 	for (instr = instrlist_first(bb); instr != NULL; instr = instr_get_next(instr))
 		instr_count++;
 	
 	dr_fprintf(f, "\nin dr_basic_block #%d (tag="PFX") esp="PFX" instr_count=%d\n", 
 			block_cnt, tag, mc.esp, instr_count);
 
-	//if(instr_count > 100)
-	//	return DR_EMIT_DEFAULT;
-	
 	for (instr = instrlist_first(bb); instr != NULL; instr =  instr_get_next(instr)) {
 		int opcode = instr_get_opcode(instr);
 		if(opcode == OP_INVALID)	continue;
 
-		if(++ insert_count >= MAX_CLEAN_INSTR_COUNT) continue;
+		if(++insert_count >= MAX_CLEAN_INSTR_COUNT) continue;
 
 		 /* instrument calls and returns  */
         if (instr_is_call_direct(instr)) {
@@ -1316,6 +1323,7 @@ event_thread_init(void *drcontext)
 	data->f = f;
 	data->untrusted_function_calling = 0;
 	data->return_address = 0;
+	data->instr_count = 0;
 
     /* store it in the slot provided in the drcontext */
     dr_set_tls_field(drcontext, data);

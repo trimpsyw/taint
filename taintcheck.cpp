@@ -314,6 +314,7 @@ typedef std::vector<std::string> function_tables;
 typedef struct thread_data_t
 {
 	file_t f;
+	int thread_id;
 
 	int untrusted_function_calling;	/* 是否正在进行调用非信任函数 */
 	app_pc call_address, into_address, return_address;
@@ -736,9 +737,10 @@ at_call(app_pc instr_addr, app_pc target_addr)
 				read_size_ref = rules[j].read_size_is_reference;
 				succeed_return_status = rules[j].succeed_return_status;
 
-				dr_fprintf(f,	"-------------------------------------------\n"
+				dr_fprintf(f,	"-----------------Thread %d-----------------------\n"
 								PFX" call %s:%s "PFX " and return "PFX"\n"
 								"-------------------------------------------\n", 
+								data->thread_id, 
 								instr_addr, mod, func2, target_addr, return_address);
 				break;
 			}
@@ -1139,7 +1141,7 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 	int in_size = data->read_size;
 	memory_list& taint_memory = data->taint_memory;
 	
-	dr_fprintf(f, "Function return status "PFX "\n",mc->eax);
+	dr_fprintf(f, "Thread %d: function return status "PFX "\n", data->thread_id, mc->eax);
 	
 	//通过返回值判断函数调用是否失败
 	if((return_status > 0 && mc->eax <= 0) || (return_status == 0 && mc->eax != 0))
@@ -1305,6 +1307,7 @@ static void
 event_thread_init(void *drcontext)
 {
     file_t f;
+	int id = dr_get_thread_id(drcontext);
     char logname[512];
     int len;
 
@@ -1312,7 +1315,7 @@ event_thread_init(void *drcontext)
                       sizeof(logname)/sizeof(logname[0]) - 1,
                       "%s/instrs-%d.log", 
 					  logsubdir,
-					  dr_get_thread_id(drcontext)/*0xffff*/);
+					  id);
     DR_ASSERT(len > 0);
     logname[sizeof(logname)/sizeof(logname[0])-1] = '\0';
     f = dr_open_file(logname, DR_FILE_WRITE_OVERWRITE);
@@ -1320,16 +1323,16 @@ event_thread_init(void *drcontext)
 		f = dr_get_stderr_file();
 
 	thread_data* data = new thread_data();
+	memset(data->taint_regs, 0, sizeof(data->taint_regs));
 	data->f = f;
 	data->untrusted_function_calling = 0;
 	data->return_address = 0;
 	data->instr_count = 0;
+	data->thread_id = id;
 
     /* store it in the slot provided in the drcontext */
     dr_set_tls_field(drcontext, data);
-    dr_log(drcontext, LOG_ALL, 1, 
-           "instrcalls: log for thread %d is instrcalls.%03d\n",
-           dr_get_thread_id(drcontext), dr_get_thread_id(drcontext));
+    dr_fprintf(f, "instrcalls: log for thread %d\n", id);
 }
 
 static void

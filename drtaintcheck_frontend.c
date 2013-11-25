@@ -730,10 +730,10 @@ _tmain(int argc, TCHAR *targv[])
 
 	info("----Step 4: dr_inject_process_run");
     dr_inject_process_run(inject_data);
-    info("waiting for app to exit...");
 
-	info("----Step 5: dr_inject_get_process_handle ");
+	info("waiting for app to exit...");
 	errcode = WaitForSingleObject(dr_inject_get_process_handle(inject_data), INFINITE);
+	info("app exitcode = %d ", errcode);
     
 	if (errcode != WAIT_OBJECT_0)
         info("failed to wait for app: %d\n", errcode);

@@ -24,9 +24,31 @@
 #ifdef WINDOWS
 # define DISPLAY_STRING(msg) dr_messagebox(msg)
 # define IF_WINDOWS(x) x
+# define ATOMIC_INC32(x) InterlockedIncrement((volatile LONG *)&(x))
+# define ATOMIC_DEC32(x) InterlockedDecrement((volatile LONG *)&(x))
+# define ATOMIC_ADD32(x, val) InterlockedExchangeAdd((volatile LONG *)&(x), val)
+
+static inline int
+atomic_add32_return_sum(volatile int *x, int val)
+{
+    return (ATOMIC_ADD32(*x, val) + val);
+}
 #else
 # define DISPLAY_STRING(msg) dr_printf("%s\n", msg);
 # define IF_WINDOWS(x) /* nothing */
+# define ATOMIC_INC32(x) __asm__ __volatile__("lock incl %0" : "=m" (x) : : "memory")
+# define ATOMIC_DEC32(x) __asm__ __volatile__("lock decl %0" : "=m" (x) : : "memory")
+# define ATOMIC_ADD32(x, val) \
+    __asm__ __volatile__("lock addl %1, %0" : "=m" (x) : "r" (val) : "memory")
+
+static inline int
+atomic_add32_return_sum(volatile int *x, int val)
+{
+    int cur;
+    __asm__ __volatile__("lock xaddl %1, %0" : "=m" (*x), "=r" (cur)
+                         : "1" (val) : "memory");
+    return (cur + val);
+}
 #endif
 
 const char* white_dll[] = {
@@ -362,8 +384,9 @@ print_function_tables(file_t f, const char* msg, function_tables& funcs)
 }
 
 static void *stats_mutex; /* for multithread support */
+static uint num_threads;
 static client_id_t my_id;
-static file_t module_log;
+static file_t global_log;
 static const char* appnm;
 char logsubdir[MAXIMUM_PATH];
 char whitelist_lib[MAXIMUM_PATH];
@@ -384,7 +407,35 @@ opcode_is_arith(int opc)
             opc == OP_inc || opc == OP_dec ||
 			opc == OP_xor || opc == OP_or || opc == OP_and ||
 			opc == OP_mul || opc == OP_div ||
-			opc == OP_sar || opc == OP_shl || opc == OP_shr);
+			/* opc_is_gpr_shift_src0 count is in src #0 */
+			opc == OP_shl || opc == OP_shr || opc == OP_sar ||
+            opc == OP_rol || opc == OP_ror || 
+            opc == OP_rcl || opc == OP_rcr ||
+			/* opc_is_gpr_shift_src1 count is in src #1 */
+			opc == OP_shld || opc == OP_shrd);
+}
+
+static bool
+opc_is_push(int opc)
+{
+    return (opc == OP_push || opc == OP_push_imm ||
+            opc == OP_pushf || opc == OP_pusha || opc == OP_enter);
+}
+
+static bool
+opc_is_pop(int opc)
+{
+    return (opc == OP_pop || opc == OP_popf || 
+		opc == OP_popa || opc == OP_leave);
+}
+
+static bool
+opc_is_move(int opc)
+{
+    return (opc == OP_mov_st || opc == OP_mov_ld ||
+            opc == OP_mov_imm || opc == OP_mov_seg ||
+            opc == OP_mov_priv || opc == OP_movzx || opc == OP_movsx ||
+			opc == OP_lea || opc == OP_movs);
 }
 
 #define MAX_OPTION_LEN DR_MAX_OPTIONS_LENGTH
@@ -413,38 +464,74 @@ get_option_word(const char *s, char buf[MAX_OPTION_LEN])
         return s;
 }
 
-static void
-create_global_logfile(const char* logdir)
-{
 #define BUFFER_SIZE_BYTES(buf)      sizeof(buf)
 #define BUFFER_SIZE_ELEMENTS(buf)   (BUFFER_SIZE_BYTES(buf) / sizeof((buf)[0]))
 #define BUFFER_LAST_ELEMENT(buf)    (buf)[BUFFER_SIZE_ELEMENTS(buf) - 1]
 #define NULL_TERMINATE_BUFFER(buf)  BUFFER_LAST_ELEMENT(buf) = 0
 
+static void
+close_file(file_t f)
+{
+    dr_close_file(f);
+}
+
+#define dr_close_file DO_NOT_USE_dr_close_file
+
+static file_t
+open_logfile(const char *name, bool pid_log, int which_thread)
+{
+    file_t f;
+    char logname[MAXIMUM_PATH];
+    if (pid_log) {
+       dr_snprintf(logname, BUFFER_SIZE_ELEMENTS(logname),
+		   "%s\\%s.%d.log", logsubdir, name, dr_get_process_id());
+    } else if (which_thread >= 0) {
+        dr_snprintf(logname, BUFFER_SIZE_ELEMENTS(logname), 
+                        "%s\\%s.%d.%d.log", logsubdir, name,
+                        which_thread, dr_get_thread_id(dr_get_current_drcontext()));
+	} else {
+        dr_snprintf(logname, BUFFER_SIZE_ELEMENTS(logname),
+                        "%s\\%s", logsubdir, name);
+    }
+    NULL_TERMINATE_BUFFER(logname);
+    
+	f = dr_open_file(logname, DR_FILE_WRITE_OVERWRITE);
+    return f;
+}
+
+static void
+create_global_logfile(const char* logdir)
+{
     uint count = 0;
     const char *appnm = dr_get_application_name();
     const uint LOGDIR_TRY_MAX = 1000;
-    /* PR 408644: pick a new subdir inside base logdir */
-    /* PR 453867: logdir must have pid in its name */
     do {
         dr_snprintf(logsubdir, sizeof(logsubdir), 
                     "%s/DrTaint-%s.%d.%03d",
                     logdir, appnm == NULL ? "null" : appnm,
                     dr_get_process_id(), count);
         NULL_TERMINATE_BUFFER(logsubdir);
-        /* FIXME PR 514092: if the base logdir is unwritable, we shouldn't loop
-         * UINT_MAX times: it looks like we've hung.
-         * Unfortuantely dr_directory_exists() is Windows-only and
-         * dr_create_dir returns only a bool, so for now we just
-         * fail if we hit 1000 dirs w/ same pid.
-         */
     } while (!dr_create_dir(logsubdir) && ++count < LOGDIR_TRY_MAX);
     if (count >= LOGDIR_TRY_MAX) {
 		dr_log(NULL, LOG_ALL, 1, "Unable to create subdir in log base dir %s\n", logdir);
         dr_abort();
     }
 
-    //f_global = open_logfile("global", true/*pid suffix*/, -1);
+    global_log = open_logfile("global", true/*pid suffix*/, -1);
+}
+
+static file_t
+create_thread_logfile(void *drcontext)
+{
+    file_t f;
+    uint which_thread = atomic_add32_return_sum((volatile int *)&num_threads, 1) - 1;
+    dr_fprintf(global_log, "new thread #%d id=%d\n",
+          which_thread, dr_get_thread_id(drcontext));
+
+    f = open_logfile("thread", false, which_thread/*tid suffix*/);
+    dr_fprintf(f, "log for thread %d\n", dr_get_thread_id(drcontext));
+
+    return f;
 }
 
 DR_EXPORT void 
@@ -465,7 +552,7 @@ dr_init(client_id_t id)
 			if(hit_type)
 			{
 				if(hit_type == 1)	
-					create_global_logfile(word);
+					strncpy(logsubdir, word, sizeof(logsubdir));
 				else if(hit_type == 2) 
 					strncpy(whitelist_lib, word, sizeof(whitelist_lib));
 				hit_type = 0;
@@ -504,7 +591,7 @@ dr_init(client_id_t id)
                       sizeof(logname)/sizeof(logname[0]) - 1,
                       "%s/load_module.log", logsubdir);
 
-	module_log = dr_open_file(logname, DR_FILE_WRITE_OVERWRITE);
+	create_global_logfile(logsubdir);
 }
 
 static void 
@@ -512,7 +599,7 @@ event_exit(void)
 {
     dr_mutex_destroy(stats_mutex);
 
-	if(module_log != INVALID_FILE)	dr_close_file(module_log);
+	close_file(global_log);
 }
 
 static void
@@ -1008,7 +1095,7 @@ taint_propagation(app_pc pc)
 	if(n1 || n2) dr_fprintf(f, "\n");
 #endif
 
-	if(opcode == OP_pop){
+	if(opc_is_pop(opcode)){
 		if(n2 > 0){
 			opnd_t dst_opnd = instr_get_dst(&instr, 0);
 			if(!opnd_is_reg(dst_opnd)) return;
@@ -1250,13 +1337,7 @@ event_basic_block(void *drcontext, void *tag, instrlist_t *bb,
             dr_insert_ubr_instrumentation(drcontext, bb, instr, (app_pc)at_jmp);	
 		} else if(opcode == OP_jmp_ind || opcode == OP_jmp_far_ind){
 			dr_insert_mbr_instrumentation(drcontext, bb, instr, at_jmp_ind, SPILL_SLOT_1);
-		} else if(instr_is_mov(instr) || opcode == OP_lea || opcode == OP_movsx ){
-			dr_insert_clean_call(drcontext, bb, instr, taint_propagation, false, 1, 
-				OPND_CREATE_INTPTR(instr_get_app_pc(instr)));
-		} else if(opcode == OP_pop || opcode == OP_popa ){
-			dr_insert_clean_call(drcontext, bb, instr, taint_propagation, false, 1, 
-				OPND_CREATE_INTPTR(instr_get_app_pc(instr)));
-		} else if(opcode_is_arith(instr_get_opcode(instr))) {
+		} else if(opc_is_move(opcode) || opc_is_pop(opcode) || opcode_is_arith(opcode)){
 			dr_insert_clean_call(drcontext, bb, instr, taint_propagation, false, 1, 
 				OPND_CREATE_INTPTR(instr_get_app_pc(instr)));
 		} else {
@@ -1275,17 +1356,17 @@ event_basic_block(void *drcontext, void *tag, instrlist_t *bb,
 static void 
 event_module_load(void *drcontext, const module_data_t *info, bool loaded)
 {
-	if(module_log != INVALID_FILE)
-	{
-		dr_fprintf(module_log, "%s module_load event %s %s %s %s %s "PFX"-"PFX"\n", 
-			appnm, info->full_path, info->names.file_name, info->names.exe_name, 
-			info->names.module_name, info->names.rsrc_name,
-			info->start, info->end);
-	}
+	const char *name;
+    name = dr_module_preferred_name(info);
+	if (name == NULL) name = "";
+
+	if(global_log != INVALID_FILE)
+		dr_fprintf(global_log, "\nmodule load event: \"%s(%s)\" "PFX"-"PFX" %s\n",
+               info->names.file_name, name, info->start, info->end, info->full_path);
 
 	if(text_matches_any_pattern(info->full_path, whitelist_lib, true))
 	{
-		dr_fprintf(module_log, "lib_whitelist module %s\n", info->names.module_name);
+		dr_fprintf(global_log, "lib_whitelist module %s\n", info->names.module_name);
 		skip_list.insert_sort(range(info->start, info->end));
 	}
 	else
@@ -1295,7 +1376,7 @@ event_module_load(void *drcontext, const module_data_t *info, bool loaded)
 			if(info->names.module_name &&
 				_stricmp(white_dll[i], info->names.module_name) == 0)
 			{
-				dr_fprintf(module_log, "whitelist module %s\n", info->names.module_name);
+				dr_fprintf(global_log, "whitelist module %s\n", info->names.module_name);
 				skip_list.insert_sort(range(info->start, info->end));
 				break;
 			}
@@ -1318,10 +1399,7 @@ event_thread_init(void *drcontext)
 					  id);
     DR_ASSERT(len > 0);
     logname[sizeof(logname)/sizeof(logname[0])-1] = '\0';
-    f = dr_open_file(logname, DR_FILE_WRITE_OVERWRITE);
-    if(f == INVALID_FILE)	
-		f = dr_get_stderr_file();
-
+    f = create_thread_logfile(drcontext);
 	thread_data* data = new thread_data();
 	memset(data->taint_regs, 0, sizeof(data->taint_regs));
 	data->f = f;
@@ -1332,7 +1410,6 @@ event_thread_init(void *drcontext)
 
     /* store it in the slot provided in the drcontext */
     dr_set_tls_field(drcontext, data);
-    dr_fprintf(f, "instrcalls: log for thread %d\n", id);
 }
 
 static void
@@ -1345,7 +1422,7 @@ event_thread_exit(void *drcontext)
 		it != data->taint_memory.end(); it++)
 		dr_fprintf(f, PFX"-"PFX"\n", it->start, it->end);
 
-    dr_close_file(f);
+    close_file(f);
 
 	delete data;
 }

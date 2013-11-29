@@ -1,14 +1,20 @@
-<?xml version="1.0" encoding = "Windows-1252"?>
+<?xml version="1.0" encoding="Windows-1252"?>
 <VisualStudioProject
 	ProjectType="Visual C++"
 	Version="9.00"
 	Name="drtaintcheck"
 	ProjectGUID="{BDF2D1FC-FA1D-439E-AFB1-B7AE05DBBA4C}"
-	Keyword="Win32Proj">
+	RootNamespace="drtaintcheck"
+	Keyword="Win32Proj"
+	TargetFrameworkVersion="0"
+	>
 	<Platforms>
 		<Platform
-			Name="Win32"/>
+			Name="Win32"
+		/>
 	</Platforms>
+	<ToolFiles>
+	</ToolFiles>
 	<Configurations>
 		<Configuration
 			Name="Release|Win32"
@@ -16,44 +22,59 @@
 			IntermediateDirectory="drtaintcheck.dir\Release"
 			ConfigurationType="1"
 			UseOfMFC="0"
-			ATLMinimizesCRunTimeLibraryUsage="FALSE"
-			CharacterSet="2">
+			ATLMinimizesCRunTimeLibraryUsage="false"
+			CharacterSet="2"
+			>
 			<Tool
-				Name="VCCLCompilerTool"
-				AdditionalIncludeDirectories="..\..\cmake\..\include;..\..\cmake\..\ext\include;"
-				CompileAs="1"
-				ExceptionHandling="0"
-				InlineFunctionExpansion="2"
-				Optimization="2"
-				RuntimeLibrary="2"
-				WarningLevel="3"
-				PreprocessorDefinitions="WIN32;_WINDOWS;NDEBUG;WIN32;_WINDOWS;X86_32;WINDOWS;DYNAMORIO_STANDALONE;SHOW_RESULTS;SHOW_SYMBOLS;_CRT_SECURE_NO_WARNINGS;CMAKE_INTDIR=\&quot;Release\&quot;"
-				AssemblerListingLocation="Release"
-				ObjectFile="$(IntDir)\"
-				ProgramDataBaseFileName="..\..\samples\make2\bin/drtaintcheck.pdb"
-/>
+				Name="VCPreBuildEventTool"
+			/>
 			<Tool
-				Name="VCCustomBuildTool"/>
+				Name="VCCustomBuildTool"
+			/>
 			<Tool
-				Name="VCResourceCompilerTool"
-				AdditionalIncludeDirectories="..\..\cmake\..\include;..\..\cmake\..\ext\include;"
-				PreprocessorDefinitions="WIN32;_WINDOWS;NDEBUG;WIN32;_WINDOWS;X86_32;WINDOWS;DYNAMORIO_STANDALONE;SHOW_RESULTS;SHOW_SYMBOLS;_CRT_SECURE_NO_WARNINGS;CMAKE_INTDIR=\&quot;Release\&quot;"/>
+				Name="VCXMLDataGeneratorTool"
+			/>
+			<Tool
+				Name="VCWebServiceProxyGeneratorTool"
+			/>
 			<Tool
 				Name="VCMIDLTool"
 				AdditionalIncludeDirectories="..\..\cmake\..\include;..\..\cmake\..\ext\include;"
-				MkTypLibCompatible="FALSE"
+				MkTypLibCompatible="false"
 				TargetEnvironment="1"
-				GenerateStublessProxies="TRUE"
+				GenerateStublessProxies="true"
 				TypeLibraryName="$(InputName).tlb"
 				OutputDirectory="$(IntDir)"
 				HeaderFileName="$(InputName).h"
 				DLLDataFileName=""
 				InterfaceIdentifierFileName="$(InputName)_i.c"
-				ProxyFileName="$(InputName)_p.c"/>
+				ProxyFileName="$(InputName)_p.c"
+			/>
 			<Tool
-				Name="VCPreBuildEventTool"/>
+				Name="VCCLCompilerTool"
+				Optimization="2"
+				InlineFunctionExpansion="2"
+				AdditionalIncludeDirectories="..\..\cmake\..\include;..\..\cmake\..\ext\include;"
+				PreprocessorDefinitions="WIN32;_WINDOWS;NDEBUG;WIN32;_WINDOWS;X86_32;WINDOWS;DYNAMORIO_STANDALONE;SHOW_RESULTS;SHOW_SYMBOLS;_CRT_SECURE_NO_WARNINGS;CMAKE_INTDIR=\&quot;Release\&quot;"
+				ExceptionHandling="0"
+				RuntimeLibrary="2"
+				AssemblerListingLocation="Release"
+				ObjectFile="$(IntDir)\"
+				ProgramDataBaseFileName="..\..\samples\make2\bin/drtaintcheck.pdb"
+				WarningLevel="3"
+				CompileAs="1"
+			/>
 			<Tool
-				Name="VCPostBuildEventTool"/>
+				Name="VCManagedResourceCompilerTool"
+			/>
+			<Tool
+				Name="VCResourceCompilerTool"
+				PreprocessorDefinitions="WIN32;_WINDOWS;NDEBUG;WIN32;_WINDOWS;X86_32;WINDOWS;DYNAMORIO_STANDALONE;SHOW_RESULTS;SHOW_SYMBOLS;_CRT_SECURE_NO_WARNINGS;CMAKE_INTDIR=\&quot;Release\&quot;"
+				AdditionalIncludeDirectories="..\..\cmake\..\include;..\..\cmake\..\ext\include;"
+			/>
+			<Tool
+				Name="VCPreLinkEventTool"
+			/>
 			<Tool
 				Name="VCLinkerTool"
 				LinkLibraryDependencies="false"
@@ -65,24 +86,50 @@
 				AdditionalLibraryDirectories=""
 				ProgramDatabaseFile="..\..\samples\make2\bin/drtaintcheck.pdb"
 				SubSystem="1"
-				ImportLibrary="..\..\samples\make2\bin\release\drtaintcheck.lib"/>
+				ImportLibrary="..\..\samples\make2\bin\release\drtaintcheck.lib"
+			/>
+			<Tool
+				Name="VCALinkTool"
+			/>
+			<Tool
+				Name="VCManifestTool"
+			/>
+			<Tool
+				Name="VCXDCMakeTool"
+			/>
+			<Tool
+				Name="VCBscMakeTool"
+			/>
+			<Tool
+				Name="VCFxCopTool"
+			/>
+			<Tool
+				Name="VCAppVerifierTool"
+			/>
+			<Tool
+				Name="VCPostBuildEventTool"
+			/>
 		</Configuration>
 	</Configurations>
+	<References>
+	</References>
 	<Files>
 		<Filter
 			Name="Source Files"
-			Filter="">
+			>
 			<File
-				RelativePath="..\..\samples\drtaintcheck_frontend.c">
+				RelativePath="..\..\samples\drtaintcheck_frontend.c"
+				>
 				<FileConfiguration
-					Name="Release|Win32">
+					Name="Release|Win32"
+					>
 					<Tool
-					Name="VCCLCompilerTool"
-					BufferSecurityCheck="FALSE"
-					DisableSpecificWarnings="4100;4127;4054"
-					Optimization="2"
-					RuntimeLibrary="0"
-					WarningLevel="3"
+						Name="VCCLCompilerTool"
+						Optimization="2"
+						RuntimeLibrary="0"
+						BufferSecurityCheck="false"
+						WarningLevel="3"
+						DisableSpecificWarnings="4100;4127;4054"
 					/>
 				</FileConfiguration>
 			</File>

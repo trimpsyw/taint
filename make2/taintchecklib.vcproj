@@ -1,14 +1,20 @@
-<?xml version="1.0" encoding = "Windows-1252"?>
+<?xml version="1.0" encoding="Windows-1252"?>
 <VisualStudioProject
 	ProjectType="Visual C++"
 	Version="9.00"
 	Name="taintchecklib"
 	ProjectGUID="{BE3EEB34-E2C3-47FA-BEAD-0AAE41EC76BA}"
-	Keyword="Win32Proj">
+	RootNamespace="taintchecklib"
+	Keyword="Win32Proj"
+	TargetFrameworkVersion="0"
+	>
 	<Platforms>
 		<Platform
-			Name="Win32"/>
+			Name="Win32"
+		/>
 	</Platforms>
+	<ToolFiles>
+	</ToolFiles>
 	<Configurations>
 		<Configuration
 			Name="Release|Win32"
@@ -16,77 +22,116 @@
 			IntermediateDirectory="taintchecklib.dir\Release"
 			ConfigurationType="2"
 			UseOfMFC="0"
-			ATLMinimizesCRunTimeLibraryUsage="FALSE"
-			CharacterSet="2">
+			ATLMinimizesCRunTimeLibraryUsage="false"
+			CharacterSet="2"
+			>
 			<Tool
-				Name="VCCLCompilerTool"
-				AdditionalIncludeDirectories="..\..\cmake\..\include;..\..\cmake\..\ext\include;"
-				CompileAs="2"
-				ExceptionHandling="1"
-				InlineFunctionExpansion="2"
-				Optimization="2"
-				RuntimeLibrary="2"
-				RuntimeTypeInfo="TRUE"
-				WarningLevel="3"
-				PreprocessorDefinitions="WIN32;_WINDOWS;NDEBUG;WIN32;_WINDOWS;X86_32;WINDOWS;SHOW_RESULTS;SHOW_SYMBOLS;_CRT_SECURE_NO_WARNINGS;CMAKE_INTDIR=\&quot;Release\&quot;;taintchecklib_EXPORTS"
-				AssemblerListingLocation="Release"
-				ObjectFile="$(IntDir)\"
-				ProgramDataBaseFileName="..\..\samples\make2\bin\release/taintchecklib.pdb"
-/>
+				Name="VCPreBuildEventTool"
+			/>
 			<Tool
-				Name="VCCustomBuildTool"/>
+				Name="VCCustomBuildTool"
+			/>
 			<Tool
-				Name="VCResourceCompilerTool"
-				AdditionalIncludeDirectories="..\..\cmake\..\include;..\..\cmake\..\ext\include;"
-				PreprocessorDefinitions="WIN32;_WINDOWS;NDEBUG;WIN32;_WINDOWS;X86_32;WINDOWS;SHOW_RESULTS;SHOW_SYMBOLS;_CRT_SECURE_NO_WARNINGS;CMAKE_INTDIR=\&quot;Release\&quot;;taintchecklib_EXPORTS"/>
+				Name="VCXMLDataGeneratorTool"
+			/>
+			<Tool
+				Name="VCWebServiceProxyGeneratorTool"
+			/>
 			<Tool
 				Name="VCMIDLTool"
 				AdditionalIncludeDirectories="..\..\cmake\..\include;..\..\cmake\..\ext\include;"
-				MkTypLibCompatible="FALSE"
+				MkTypLibCompatible="false"
 				TargetEnvironment="1"
-				GenerateStublessProxies="TRUE"
+				GenerateStublessProxies="true"
 				TypeLibraryName="$(InputName).tlb"
 				OutputDirectory="$(IntDir)"
 				HeaderFileName="$(InputName).h"
 				DLLDataFileName=""
 				InterfaceIdentifierFileName="$(InputName)_i.c"
-				ProxyFileName="$(InputName)_p.c"/>
+				ProxyFileName="$(InputName)_p.c"
+			/>
 			<Tool
-				Name="VCPreBuildEventTool"/>
+				Name="VCCLCompilerTool"
+				Optimization="2"
+				InlineFunctionExpansion="2"
+				AdditionalIncludeDirectories="..\..\cmake\..\include;..\..\cmake\..\ext\include;"
+				PreprocessorDefinitions="WIN32;_WINDOWS;NDEBUG;WIN32;_WINDOWS;X86_32;WINDOWS;SHOW_RESULTS;SHOW_SYMBOLS;_CRT_SECURE_NO_WARNINGS;CMAKE_INTDIR=\&quot;Release\&quot;;taintchecklib_EXPORTS"
+				ExceptionHandling="1"
+				RuntimeLibrary="2"
+				RuntimeTypeInfo="true"
+				AssemblerListingLocation="Release"
+				ObjectFile="$(IntDir)\"
+				ProgramDataBaseFileName="..\..\samples\make2\bin\release/taintchecklib.pdb"
+				WarningLevel="3"
+				CompileAs="2"
+			/>
 			<Tool
-				Name="VCPreLinkEventTool"/>
+				Name="VCManagedResourceCompilerTool"
+			/>
 			<Tool
-				Name="VCPostBuildEventTool"/>
+				Name="VCResourceCompilerTool"
+				PreprocessorDefinitions="WIN32;_WINDOWS;NDEBUG;WIN32;_WINDOWS;X86_32;WINDOWS;SHOW_RESULTS;SHOW_SYMBOLS;_CRT_SECURE_NO_WARNINGS;CMAKE_INTDIR=\&quot;Release\&quot;;taintchecklib_EXPORTS"
+				AdditionalIncludeDirectories="..\..\cmake\..\include;..\..\cmake\..\ext\include;"
+			/>
+			<Tool
+				Name="VCPreLinkEventTool"
+			/>
 			<Tool
 				Name="VCLinkerTool"
 				LinkLibraryDependencies="false"
-				AdditionalOptions=" /machine:X86 /nodefaultlib:libcmt"
-				AdditionalDependencies="$(NOINHERIT) kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib libcpmt.lib libcmt.lib ..\..\lib32\release\dynamorio.lib ..\..\ext\lib32\release\drmgr.lib ..\..\ext\lib32\release\drsyms.lib ..\..\ext\lib32\release\drx.lib ..\..\lib32\release\dynamorio.lib "
+				AdditionalOptions=" /machine:X86 /nodefaultlib:libcmt /dynamicbase:no /nxcompat /safeseh:no /opt:ref /opt:icf /debug"
+				AdditionalDependencies="$(NOINHERIT) kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib libcmt.lib dynamorio\lib32\release\dynamorio.lib dynamorio\ext\lib32\release\drcontainers.lib dynamorio\ext\lib32\release\drmgr.lib dynamorio\ext\lib32\release\drx.lib dynamorio\ext\lib32\release\drutil.lib dynamorio\ext\lib32\release\drwrap.lib dynamorio\ext\lib32\release\drsyms.lib dynamorio\core\ntdll_imports.lib libcpmt.lib dbghelp.lib dynamorio\lib32\dbghelp_imports.lib dynamorio\lib32\dwarf.lib dynamorio\lib32\elftc.lib dynamorio\core\ntdll_imports.lib libcmt.lib dynamorio\ext\lib32\release\drcontainers.lib dynamorio\ext\lib32\release\drmgr.lib dynamorio\ext\lib32\release\drx.lib dynamorio\lib32\release\dynamorio.lib &#x0A;"
 				OutputFile="..\..\samples\make2\bin\release\taintchecklib.dll"
 				Version="0.0"
 				LinkIncremental="1"
 				AdditionalLibraryDirectories=""
 				ProgramDatabaseFile="..\..\samples\make2\bin\release\taintchecklib.pdb"
-				ImportLibrary="..\..\samples\make2\bin\release\taintchecklib.lib"/>
+				ImportLibrary="..\..\samples\make2\bin\release\taintchecklib.lib"
+			/>
+			<Tool
+				Name="VCALinkTool"
+			/>
+			<Tool
+				Name="VCManifestTool"
+			/>
+			<Tool
+				Name="VCXDCMakeTool"
+			/>
+			<Tool
+				Name="VCBscMakeTool"
+			/>
+			<Tool
+				Name="VCFxCopTool"
+			/>
+			<Tool
+				Name="VCAppVerifierTool"
+			/>
+			<Tool
+				Name="VCPostBuildEventTool"
+			/>
 		</Configuration>
 	</Configurations>
+	<References>
+	</References>
 	<Files>
 		<Filter
 			Name="Source Files"
-			Filter="">
+			>
 			<File
-				RelativePath="..\..\samples\taintcheck.cpp">
+				RelativePath="..\..\samples\taintcheck.cpp"
+				>
 				<FileConfiguration
-					Name="Release|Win32">
+					Name="Release|Win32"
+					>
 					<Tool
-					Name="VCCLCompilerTool"
-					BufferSecurityCheck="FALSE"
-					DisableSpecificWarnings="4100;4127;4054"
-					ExceptionHandling="1"
-					Optimization="2"
-					RuntimeLibrary="0"
-					RuntimeTypeInfo="TRUE"
-					WarningLevel="3"
+						Name="VCCLCompilerTool"
+						Optimization="2"
+						ExceptionHandling="1"
+						RuntimeLibrary="0"
+						BufferSecurityCheck="false"
+						RuntimeTypeInfo="true"
+						WarningLevel="3"
+						DisableSpecificWarnings="4100;4127;4054"
 					/>
 				</FileConfiguration>
 			</File>

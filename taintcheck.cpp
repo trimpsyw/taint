@@ -13,6 +13,12 @@
 #include <vector>
 #include <algorithm>
 #include <string>
+#include <stddef.h>
+#ifdef WINDOWS
+# include "windefs.h"
+#endif
+
+static const char * const build_date = __DATE__ " " __TIME__;
 
 #define MAX_CLEAN_INSTR_COUNT 64
 
@@ -33,6 +39,132 @@ atomic_add32_return_sum(volatile int *x, int val)
 {
     return (ATOMIC_ADD32(*x, val) + val);
 }
+
+typedef enum _THREADINFOCLASS {
+    ThreadBasicInformation,
+    ThreadTimes,
+    ThreadPriority,
+    ThreadBasePriority,
+    ThreadAffinityMask,
+    ThreadImpersonationToken,
+    ThreadDescriptorTableEntry,
+    ThreadEnableAlignmentFaultFixup,
+    ThreadEventPair_Reusable,
+    ThreadQuerySetWin32StartAddress,
+    ThreadZeroTlsCell,
+    ThreadPerformanceCount,
+    ThreadAmILastThread,
+    ThreadIdealProcessor,
+    ThreadPriorityBoost,
+    ThreadSetTlsArrayAddress,
+    ThreadIsIoPending,
+    ThreadHideFromDebugger,
+    MaxThreadInfoClass
+} THREADINFOCLASS;
+
+typedef LONG KPRIORITY;
+
+typedef struct _THREAD_BASIC_INFORMATION { // Information Class 0
+    NTSTATUS ExitStatus;
+    PNT_TIB TebBaseAddress;
+    CLIENT_ID ClientId;
+    KAFFINITY AffinityMask;
+    KPRIORITY Priority;
+    KPRIORITY BasePriority;
+} THREAD_BASIC_INFORMATION, *PTHREAD_BASIC_INFORMATION;
+
+#define InitializeObjectAttributes( p, n, a, r, s ) {   \
+    (p)->Length = sizeof( OBJECT_ATTRIBUTES );          \
+    (p)->RootDirectory = r;                             \
+    (p)->Attributes = a;                                \
+    (p)->ObjectName = n;                                \
+    (p)->SecurityDescriptor = s;                        \
+    (p)->SecurityQualityOfService = NULL;               \
+    }
+
+#define OBJ_CASE_INSENSITIVE    0x00000040L
+
+extern "C"
+{
+	GET_NTDLL(NtQueryInformationThread, (IN HANDLE ThreadHandle,
+                                     IN THREADINFOCLASS ThreadInformationClass,
+                                     OUT PVOID ThreadInformation,
+                                     IN ULONG ThreadInformationLength,
+                                     OUT PULONG ReturnLength OPTIONAL));
+
+	GET_NTDLL(NtOpenThread, (OUT PHANDLE ThreadHandle,
+                         IN ACCESS_MASK DesiredAccess,
+                         IN POBJECT_ATTRIBUTES ObjectAttributes,
+                         IN PCLIENT_ID ClientId));
+
+	GET_NTDLL(NtQueryInformationJobObject, (IN HANDLE JobHandle,
+                                        IN JOBOBJECTINFOCLASS JobInformationClass,
+                                        OUT PVOID JobInformation,
+                                        IN ULONG JobInformationLength,
+                                        OUT PULONG ReturnLength OPTIONAL));
+}
+
+
+TEB *
+get_TEB(void)
+{
+#ifdef X64
+    return (TEB *) __readgsqword(offsetof(TEB, Self));
+#else
+    return (TEB *) __readfsdword(offsetof(TEB, Self));
+#endif
+}
+
+TEB *
+get_TEB_from_handle(HANDLE h)
+{
+    ULONG got;
+    THREAD_BASIC_INFORMATION info;
+    NTSTATUS res;
+    memset(&info, 0, sizeof(THREAD_BASIC_INFORMATION));
+    res = NtQueryInformationThread(h, ThreadBasicInformation,
+                                   &info, sizeof(THREAD_BASIC_INFORMATION), &got);
+    if (!NT_SUCCESS(res) || got != sizeof(THREAD_BASIC_INFORMATION)) {
+        return NULL;
+    }
+    return (TEB *) info.TebBaseAddress;
+}
+
+thread_id_t
+get_tid_from_handle(HANDLE h)
+{
+    ULONG got;
+    THREAD_BASIC_INFORMATION info;
+    NTSTATUS res;
+    memset(&info, 0, sizeof(THREAD_BASIC_INFORMATION));
+    res = NtQueryInformationThread(h, ThreadBasicInformation,
+                                   &info, sizeof(THREAD_BASIC_INFORMATION), &got);
+    if (!NT_SUCCESS(res) || got != sizeof(THREAD_BASIC_INFORMATION)) {
+        return 0;
+    }
+    return (thread_id_t) info.ClientId.UniqueThread;
+}
+
+TEB *
+get_TEB_from_tid(thread_id_t tid)
+{
+    HANDLE h;
+    TEB *teb = NULL;
+    NTSTATUS res;
+    OBJECT_ATTRIBUTES oa;
+    CLIENT_ID cid;
+    /* these aren't really HANDLEs */
+	cid.UniqueProcess = (HANDLE) dr_get_process_id();
+    cid.UniqueThread = (HANDLE) tid;
+    InitializeObjectAttributes(&oa, NULL, OBJ_CASE_INSENSITIVE, NULL, NULL);
+    res = NtOpenThread(&h, THREAD_QUERY_INFORMATION, &oa, &cid);
+    if (NT_SUCCESS(res)) {
+        teb = get_TEB_from_handle(h);
+        dr_close_file(h);
+    } 
+    return teb;
+}
+
 #else
 # define DISPLAY_STRING(msg) dr_printf("%s\n", msg);
 # define IF_WINDOWS(x) /* nothing */
@@ -335,9 +467,8 @@ typedef std::vector<std::string> function_tables;
 
 typedef struct thread_data_t
 {
-	file_t f;
-	int thread_id;
-
+	file_t f;					/* 日志文件fd */
+	int thread_id;				/* 线程ID */
 	int untrusted_function_calling;	/* 是否正在进行调用非信任函数 */
 	app_pc call_address, into_address, return_address;
 	int buffer_idx;				/* 索引：缓冲区*/
@@ -349,16 +480,17 @@ typedef struct thread_data_t
 	app_pc read_size_offset;	/* 相对于esp的偏移量 */
 	app_pc read_buffer;			/* 最终的缓冲区地址 */
 	int read_size;				/* 最终的缓冲区大小 */
-
 	int instr_count;			/* 指令块计数 */
+	app_pc stack_base;			/* 栈底部 */
+	app_pc stack_end;			/* 栈顶最小值 */
+	byte taint_regs[DR_REG_INVALID];	/* 寄存器污染状态*/
 
-	memory_list taint_memory;
-	byte taint_regs[DR_REG_INVALID];
-
-	function_tables funcs;
 	int enter_function;
 	int leave_function;
+	
+	memory_list taint_memory;
 	std::string this_function; 
+	function_tables funcs;
 }thread_data;
 
 static memory_list skip_list;
@@ -390,6 +522,9 @@ static file_t global_log;
 static const char* appnm;
 char logsubdir[MAXIMUM_PATH];
 char whitelist_lib[MAXIMUM_PATH];
+app_pc app_base;
+app_pc app_end;
+char app_path[MAXIMUM_PATH];
 
 static void event_thread_init(void *drcontext);
 static void event_thread_exit(void *drcontext);
@@ -436,6 +571,18 @@ opc_is_move(int opc)
             opc == OP_mov_imm || opc == OP_mov_seg ||
             opc == OP_mov_priv || opc == OP_movzx || opc == OP_movsx ||
 			opc == OP_lea || opc == OP_movs);
+}
+
+static bool
+within_function(app_pc pc, dr_mcontext_t* mc)
+{
+	return (pc >= (app_pc)mc->esp && pc <= (app_pc)mc->ebp);
+}
+
+static bool
+within_global_stack(app_pc pc, app_pc stack_end, app_pc stack_base)
+{
+	return (pc >= stack_end && pc <= stack_base);
 }
 
 #define MAX_OPTION_LEN DR_MAX_OPTIONS_LENGTH
@@ -518,6 +665,8 @@ create_global_logfile(const char* logdir)
     }
 
     global_log = open_logfile("global", true/*pid suffix*/, -1);
+
+	dr_fprintf(global_log, "Dr. TaintCheck built on %s\n", build_date);
 }
 
 static file_t
@@ -534,38 +683,62 @@ create_thread_logfile(void *drcontext)
     return f;
 }
 
+static void 
+process_options(const char* opstr)
+{
+	const char *s;
+	char word[MAX_OPTION_LEN];
+	int hit_type = 0;
+	for (s = get_option_word(opstr, word); s != NULL; s = get_option_word(s, word)) 
+	{
+		if(hit_type)
+		{
+			if(hit_type == 1)	
+				strncpy(logsubdir, word, sizeof(logsubdir));
+			else if(hit_type == 2) 
+				strncpy(whitelist_lib, word, sizeof(whitelist_lib));
+			hit_type = 0;
+		}
+		if(strcmp(word, "-logdir") == 0)
+			hit_type = 1;
+		else if(strcmp(word, "-lib_whitelist") == 0)
+			hit_type = 2;
+	}
+}
+
 DR_EXPORT void 
 dr_init(client_id_t id)
 {
     const char* opstr;
+	module_data_t *data;
 
 	my_id = id;
-	opstr = dr_get_options(my_id);
+	process_options(opstr = dr_get_options(my_id));
 	appnm = dr_get_application_name();
-
-	{
-		const char *s;
-		char word[MAX_OPTION_LEN];
-		int hit_type = 0;
-		for (s = get_option_word(opstr, word); s != NULL; s = get_option_word(s, word)) 
-		{
-			if(hit_type)
-			{
-				if(hit_type == 1)	
-					strncpy(logsubdir, word, sizeof(logsubdir));
-				else if(hit_type == 2) 
-					strncpy(whitelist_lib, word, sizeof(whitelist_lib));
-				hit_type = 0;
-			}
-			if(strcmp(word, "-logdir") == 0)
-				hit_type = 1;
-			else if(strcmp(word, "-lib_whitelist") == 0)
-				hit_type = 2;
-		}
-	}
-    
 	stats_mutex = dr_mutex_create();
 
+#ifdef WINDOWS
+	TEB* teb = get_TEB();
+    data = dr_lookup_module((byte*)teb->ProcessEnvironmentBlock->ImageBaseAddress);
+#else
+    if (appnm == NULL)
+        data = NULL;
+    else
+        data = dr_lookup_module_by_name(appnm);
+#endif
+    if (data) {
+        app_base = data->start;
+        app_end = data->end;
+        dr_snprintf(app_path, BUFFER_SIZE_ELEMENTS(app_path), data->full_path);
+        NULL_TERMINATE_BUFFER(app_path);
+        dr_free_module_data(data);
+    }
+
+	create_global_logfile(logsubdir);
+
+	dr_fprintf(global_log, "options are \"%s\"\n", opstr);
+	dr_fprintf(global_log, "executable \"%s\" is "PFX"-"PFX"\n", app_path, app_base, app_end);
+	
 	if (drsym_init(0) != DRSYM_SUCCESS) {
         dr_log(NULL, LOG_ALL, 1, "WARNING: unable to initialize symbol translation\n");
     }
@@ -576,7 +749,7 @@ dr_init(client_id_t id)
         /* ask for best-effort printing to cmd window.  must be called in dr_init(). */
         dr_enable_console_printing();
 # endif
-        dr_fprintf(STDOUT, "Client bbsize is running\n");
+        dr_fprintf(STDOUT, "Client taintchecklib is running\n");
     }
 
 	dr_register_bb_event(event_basic_block);
@@ -584,14 +757,6 @@ dr_init(client_id_t id)
 	dr_register_module_load_event(event_module_load);
     dr_register_thread_init_event(event_thread_init);
     dr_register_thread_exit_event(event_thread_exit);
-
-	char logname[512];
-    int len;
-	len = dr_snprintf(logname,
-                      sizeof(logname)/sizeof(logname[0]) - 1,
-                      "%s/load_module.log", logsubdir);
-
-	create_global_logfile(logsubdir);
 }
 
 static void 
@@ -1231,7 +1396,7 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 	dr_fprintf(f, "Thread %d: function return status "PFX "\n", data->thread_id, mc->eax);
 	
 	//通过返回值判断函数调用是否失败
-	if((return_status > 0 && mc->eax <= 0) || (return_status == 0 && mc->eax != 0))
+	if((return_status > 0 && (int)mc->eax <= 0) || (return_status == 0 && mc->eax != 0))
 	{
 		dr_fprintf(f, "Failed to call function\n");
 		untrusted_function_calling = 0;
@@ -1258,6 +1423,8 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 	{
 		taint_memory.insert_sort(range(read_buffer, read_buffer+read_size));
 		dr_fprintf(f, "[Out] Read Size "PFX"\n", read_size);
+		dr_fprintf(f, "within_global_stack=%d\n", within_global_stack(read_buffer,
+			data->stack_base, data->stack_end));
 	}
 	else
 	{
@@ -1280,6 +1447,8 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 
 			{
 				dr_fprintf(f, "[Out] Taint memory "PFX" %d\n", addr, value);
+				dr_fprintf(f, "within_global_stack=%d\n", within_global_stack(addr,
+					data->stack_base, data->stack_end));
 				taint_memory.insert_sort(range(addr, addr+value));
 			}
 
@@ -1361,8 +1530,8 @@ event_module_load(void *drcontext, const module_data_t *info, bool loaded)
 	if (name == NULL) name = "";
 
 	if(global_log != INVALID_FILE)
-		dr_fprintf(global_log, "\nmodule load event: \"%s(%s)\" "PFX"-"PFX" %s\n",
-               info->names.file_name, name, info->start, info->end, info->full_path);
+		dr_fprintf(global_log, "\nmodule load event: \"%s\" "PFX"-"PFX" %s\n",
+               name, info->start, info->end, info->full_path);
 
 	if(text_matches_any_pattern(info->full_path, whitelist_lib, true))
 	{
@@ -1387,26 +1556,25 @@ event_module_load(void *drcontext, const module_data_t *info, bool loaded)
 static void
 event_thread_init(void *drcontext)
 {
-    file_t f;
 	int id = dr_get_thread_id(drcontext);
-    char logname[512];
-    int len;
-
-    len = dr_snprintf(logname,
-                      sizeof(logname)/sizeof(logname[0]) - 1,
-                      "%s/instrs-%d.log", 
-					  logsubdir,
-					  id);
-    DR_ASSERT(len > 0);
-    logname[sizeof(logname)/sizeof(logname[0])-1] = '\0';
-    f = create_thread_logfile(drcontext);
+    file_t f = create_thread_logfile(drcontext);
 	thread_data* data = new thread_data();
+
+	memset(data, 0, data->taint_regs-(byte*)data);
 	memset(data->taint_regs, 0, sizeof(data->taint_regs));
 	data->f = f;
-	data->untrusted_function_calling = 0;
-	data->return_address = 0;
-	data->instr_count = 0;
 	data->thread_id = id;
+
+#ifdef WINDOWS
+	TEB* teb = get_TEB_from_tid(id);
+	data->stack_base = (app_pc)teb->StackBase;
+	data->stack_end = (app_pc)teb->StackLimit;
+	dr_fprintf(global_log, "stack is "PFX"-"PFX"\n", data->stack_base, data->stack_end);
+	dr_fprintf(f, "stack is "PFX"-"PFX"\n", data->stack_base, data->stack_end);
+#else
+	data->stack_base = 0;
+	data->stack_end = 0;
+#endif
 
     /* store it in the slot provided in the drcontext */
     dr_set_tls_field(drcontext, data);

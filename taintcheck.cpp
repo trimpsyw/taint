@@ -482,7 +482,7 @@ typedef struct thread_data_t
 	int read_size;				/* 最终的缓冲区大小 */
 	int instr_count;			/* 指令块计数 */
 	app_pc stack_base;			/* 栈底部 */
-	app_pc stack_end;			/* 栈顶最小值 */
+	app_pc stack_end;			/* 栈顶最小值 (stack_base > stack_end)*/
 	byte taint_regs[DR_REG_INVALID];	/* 寄存器污染状态*/
 
 	int enter_function;
@@ -580,7 +580,7 @@ within_function(app_pc pc, dr_mcontext_t* mc)
 }
 
 static bool
-within_global_stack(app_pc pc, app_pc stack_end, app_pc stack_base)
+within_global_stack(app_pc pc, app_pc stack_base, app_pc stack_end)
 {
 	return (pc >= stack_end && pc <= stack_base);
 }

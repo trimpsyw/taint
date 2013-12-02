@@ -22,10 +22,13 @@ static const char * const build_date = __DATE__ " " __TIME__;
 
 #define MAX_CLEAN_INSTR_COUNT 64
 
-//#define SHOW_SYM
-//#define SHOW_INSTR
-//#define SHOW_PROPAGATION
-//#define SHOW_FUNCTION_TREE
+typedef enum{
+	SHOW_INSTR			= 0x01,
+	SHOW_SYM			= 0x02,
+	SHOW_FUNC_TREE		= 0x04,
+	SHOW_PROPAGATION	= 0x08,
+	SHOW_TAINTING		= 0x10,
+}show_mask_t;
 
 #ifdef WINDOWS
 # define DISPLAY_STRING(msg) dr_messagebox(msg)
@@ -184,7 +187,7 @@ atomic_add32_return_sum(volatile int *x, int val)
 #endif
 
 const char* white_dll[] = {
-	"ntdll.dll", "kernel32.dll", "KERNELBASE.dll", "user32.dll", "msvcrt.dll",
+	"ntdll.dll", "KERNELBASE.dll", "user32.dll", "msvcrt.dll",
 	"gdi32.dll", "shell32.dll",  "ole32.dll", "oleaut32.dll",
 	"comdlg32.dll","advapi32.dll", "imm32.dll", "rpcrt4.dll",
 	"secur32.dll", "usp10.dll", "shlwapi.dll", "comctl32.dll",
@@ -193,13 +196,13 @@ const char* white_dll[] = {
 	"NSI.dll", "sechost.dll", "DEVOBJ.dll", "CFGMGR32.dll",
 	"cryptbase.dll", "normaliz.dll", "version.dll","urlmon.dll",
 	"msimg32.dll", "crypt32.dll",
-	"ws2_32.dll", "netapi32.dll", "WININET.dll", "iphlpapi.dll",
-	"mswsock.dll", "wshtcpip.dll",
+	"netapi32.dll", "WININET.dll", "iphlpapi.dll", "mswsock.dll", "wshtcpip.dll",
 	"netutils.dll", "srvcli.dll", "wkscli.dll", "netbios.dll",
-
-	//"msvcr90.dll", "msvcr80.dll", "msvcr70.dll", "msvcr60.dll",
-	//"msvcp90.dll", "msvcp80.dll", "msvcp70.dll", "msvcp60.dll",
 	"snxhk.dll", "safemon.dll", "sepro.dll", "360safemonpro.tpi"		//anti-virus
+};
+
+const char* black_dll[] = {
+	"msvc*.dll", "kernel32.dll", "ws2_32.dll", "wsock32.dll",
 };
 
 struct api_call_rule_t
@@ -232,71 +235,12 @@ struct api_call_rule_t
 	{"wsock32.dll",		"recv",			4, 2, 1, 3, 0, 0, 0, 1},
 };
 
-bool
-text_matches_pattern(const char *text, const char *pattern,
-                     bool ignore_case)
-{
-    /* Match text with pattern and return the result.
-     * The pattern may contain '*' and '?' wildcards.
-     */
-    const char *cur_text = text,
-               *text_last_asterisk = NULL,
-               *pattern_last_asterisk = NULL;
-    char cmp_cur, cmp_pat;
-    while (*cur_text != '\0') {
-        cmp_cur = *cur_text;
-        cmp_pat = *pattern;
-        if (ignore_case) {
-            cmp_cur = (char) tolower(cmp_cur);
-            cmp_pat = (char) tolower(cmp_pat);
-        }
-        if (*pattern == '*') {
-            while (*++pattern == '*') {
-                /* Skip consecutive '*'s */
-            }
-            if (*pattern == '\0') {
-                /* the pattern ends with a series of '*' */
-                return true;
-            }
-            text_last_asterisk = cur_text;
-            pattern_last_asterisk = pattern;
-        } else if ((cmp_cur == cmp_pat) || (*pattern == '?')) {
-            ++cur_text;
-            ++pattern;
-        } else if (text_last_asterisk != NULL) {
-            /* No match. But we have seen at least one '*', so go back
-             * and try at the next position.
-             */
-            pattern = pattern_last_asterisk;
-            cur_text = text_last_asterisk++;
-        } else {
-            return false;
-        }
-    }
-    while (*pattern == '*')
-        ++pattern;
-    return *pattern == '\0';
-}
-
-/* patterns is a null-separated, double-null-terminated list of strings */
-bool
-text_matches_any_pattern(const char *text, const char *patterns, bool ignore_case)
-{
-    const char *c = patterns;
-    while (*c != '\0') {
-        if (text_matches_pattern(text, c, ignore_case))
-            return true;
-        c += strlen(c) + 1;
-    }
-    return false;
-}
-
 struct range {
 	app_pc start, end;//[start, end)
 
 	range(app_pc start, app_pc end) : start(start),end(end) {}
 
-	range(app_pc pc) : start(pc), end(pc){}
+	range(app_pc pc) : start(pc), end(pc+1){}
 
 	bool operator<(const range &range) const {
 		return (this->start<range.start) | (this->start==range.start && this->end<range.end);
@@ -430,12 +374,12 @@ public:
 			_ranges.erase(end, _ranges.end());
 	}
 
-	void remove(app_pc start, app_pc end){
+	bool remove(app_pc start, app_pc end){
 		iterator it1, it2;
 		if(within(start, &it1)==_ranges.end() && 
 			within(end, &it2)==_ranges.end() && 
 			it1 == it2)
-			return;
+			return false;
 		
 		insert_sort(range(start, end));
 
@@ -453,6 +397,7 @@ public:
 				_ranges.insert(++it, range(end, old_end));
 			}
 		}
+		return true;
 	}
 
 	bool find(app_pc pc){
@@ -514,31 +459,12 @@ typedef struct thread_data_t
 	int leave_function;
 	
 	memory_list taint_memory;
+	memory_list taint_memory_stack;
 	std::string this_function; 
 	function_tables funcs;
 }thread_data;
 
 static memory_list skip_list;
-
-static bool
-within_whitelist(app_pc pc)
-{
-	if(skip_list.size() && skip_list.find(pc))
-		return true;		
-	return false;
-}
-
-static void
-print_function_tables(file_t f, const char* msg, function_tables& funcs)
-{
-#ifdef SHOW_FUNCTION_TREE
-	dr_fprintf(f, "%s ", msg);
-	for(function_tables::iterator it = funcs.begin();
-		it != funcs.end(); it++)
-		dr_fprintf(f, "%s:", it->c_str());
-	dr_fprintf(f, "\n");
-#endif
-}
 
 static void *stats_mutex; /* for multithread support */
 static uint num_threads;
@@ -550,15 +476,74 @@ char whitelist_lib[MAXIMUM_PATH];
 app_pc app_base;
 app_pc app_end;
 char app_path[MAXIMUM_PATH];
+show_mask_t verbose;
 
-static void event_thread_init(void *drcontext);
-static void event_thread_exit(void *drcontext);
-static void event_exit(void);
-static dr_emit_flags_t event_basic_block(void *drcontext, void *tag, instrlist_t *bb,
-                                         bool for_trace, bool translating);
-static void event_module_load(void *drcontext, const module_data_t *info, bool loaded);
+bool
+text_matches_pattern(const char *text, const char *pattern,
+                     bool ignore_case)
+{
+    /* Match text with pattern and return the result.
+     * The pattern may contain '*' and '?' wildcards.
+     */
+    const char *cur_text = text,
+               *text_last_asterisk = NULL,
+               *pattern_last_asterisk = NULL;
+    char cmp_cur, cmp_pat;
+    while (*cur_text != '\0') {
+        cmp_cur = *cur_text;
+        cmp_pat = *pattern;
+        if (ignore_case) {
+            cmp_cur = (char) tolower(cmp_cur);
+            cmp_pat = (char) tolower(cmp_pat);
+        }
+        if (*pattern == '*') {
+            while (*++pattern == '*') {
+                /* Skip consecutive '*'s */
+            }
+            if (*pattern == '\0') {
+                /* the pattern ends with a series of '*' */
+                return true;
+            }
+            text_last_asterisk = cur_text;
+            pattern_last_asterisk = pattern;
+        } else if ((cmp_cur == cmp_pat) || (*pattern == '?')) {
+            ++cur_text;
+            ++pattern;
+        } else if (text_last_asterisk != NULL) {
+            /* No match. But we have seen at least one '*', so go back
+             * and try at the next position.
+             */
+            pattern = pattern_last_asterisk;
+            cur_text = text_last_asterisk++;
+        } else {
+            return false;
+        }
+    }
+    while (*pattern == '*')
+        ++pattern;
+    return *pattern == '\0';
+}
 
-static void taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc);
+/* patterns is a null-separated, double-null-terminated list of strings */
+bool
+text_matches_any_pattern(const char *text, const char *patterns, bool ignore_case)
+{
+    const char *c = patterns;
+    while (*c != '\0') {
+        if (text_matches_pattern(text, c, ignore_case))
+            return true;
+        c += strlen(c) + 1;
+    }
+    return false;
+}
+
+static bool
+within_whitelist(app_pc pc)
+{
+	if(skip_list.size() && skip_list.find(pc))
+		return true;		
+	return false;
+}
 
 static bool
 opcode_is_arith(int opc)
@@ -636,6 +621,34 @@ get_option_word(const char *s, char buf[MAX_OPTION_LEN])
         return s;
 }
 
+static void 
+process_options(const char* opstr)
+{
+	const char *s;
+	char word[MAX_OPTION_LEN];
+	for (s = get_option_word(opstr, word); s != NULL; s = get_option_word(s, word)) 
+	{
+		if(strcmp(word, "-logdir") == 0)
+		{
+			if(s = get_option_word(s, word))
+				strncpy(logsubdir, word, sizeof(logsubdir));
+			else break;
+		}
+		else if(strcmp(word, "-lib_whitelist") == 0)
+		{
+			if(s = get_option_word(s, word))
+				strncpy(whitelist_lib, word, sizeof(whitelist_lib));
+			else break;
+		}
+		else if(strcmp(word, "-verbose") == 0)
+		{
+			if(s = get_option_word(s, word))
+				verbose = (show_mask_t)atoi(word);
+			else break;
+		}
+	}
+}
+
 #define BUFFER_SIZE_BYTES(buf)      sizeof(buf)
 #define BUFFER_SIZE_ELEMENTS(buf)   (BUFFER_SIZE_BYTES(buf) / sizeof((buf)[0]))
 #define BUFFER_LAST_ELEMENT(buf)    (buf)[BUFFER_SIZE_ELEMENTS(buf) - 1]
@@ -708,96 +721,31 @@ create_thread_logfile(void *drcontext)
     return f;
 }
 
-static void 
-process_options(const char* opstr)
+static void
+print_function_tables(file_t f, const char* msg, function_tables& funcs)
 {
-	const char *s;
-	char word[MAX_OPTION_LEN];
-	int hit_type = 0;
-	for (s = get_option_word(opstr, word); s != NULL; s = get_option_word(s, word)) 
+	if(verbose & SHOW_FUNC_TREE)
 	{
-		if(hit_type)
-		{
-			if(hit_type == 1)	
-				strncpy(logsubdir, word, sizeof(logsubdir));
-			else if(hit_type == 2) 
-				strncpy(whitelist_lib, word, sizeof(whitelist_lib));
-			hit_type = 0;
-		}
-		if(strcmp(word, "-logdir") == 0)
-			hit_type = 1;
-		else if(strcmp(word, "-lib_whitelist") == 0)
-			hit_type = 2;
+		dr_fprintf(f, "%s ", msg);
+		for(function_tables::iterator it = funcs.begin();
+			it != funcs.end(); it++)
+			dr_fprintf(f, "%s:", it->c_str());
+		dr_fprintf(f, "\n");
 	}
-}
-
-DR_EXPORT void 
-dr_init(client_id_t id)
-{
-    const char* opstr;
-	module_data_t *data;
-
-	my_id = id;
-	process_options(opstr = dr_get_options(my_id));
-	appnm = dr_get_application_name();
-	stats_mutex = dr_mutex_create();
-
-#ifdef WINDOWS
-	TEB* teb = get_TEB();
-    data = dr_lookup_module((byte*)teb->ProcessEnvironmentBlock->ImageBaseAddress);
-#else
-    if (appnm == NULL)
-        data = NULL;
-    else
-        data = dr_lookup_module_by_name(appnm);
-#endif
-    if (data) {
-        app_base = data->start;
-        app_end = data->end;
-        dr_snprintf(app_path, BUFFER_SIZE_ELEMENTS(app_path), data->full_path);
-        NULL_TERMINATE_BUFFER(app_path);
-        dr_free_module_data(data);
-    }
-
-	create_global_logfile(logsubdir);
-
-	dr_fprintf(global_log, "options are \"%s\"\n", opstr);
-	dr_fprintf(global_log, "executable \"%s\" is "PFX"-"PFX"\n", app_path, app_base, app_end);
-
-	if (drsym_init(IF_WINDOWS_ELSE(NULL, 0)) != DRSYM_SUCCESS) {
-        dr_log(NULL, LOG_ALL, 1, "WARNING: unable to initialize symbol translation\n");
-    }
-
-# ifdef WINDOWS
-    dr_enable_console_printing();
-# endif
-    
-	dr_register_bb_event(event_basic_block);
-    dr_register_exit_event(event_exit);
-	dr_register_module_load_event(event_module_load);
-    dr_register_thread_init_event(event_thread_init);
-    dr_register_thread_exit_event(event_thread_exit);
-}
-
-static void 
-event_exit(void)
-{
-    dr_mutex_destroy(stats_mutex);
-
-	close_file(global_log);
 }
 
 static void
 print_instr(void* drcontext, file_t f, instr_t* instr, app_pc pc)
 {
-#ifdef SHOW_INSTR
-	int n1 = instr_num_srcs(instr);
-	int n2 = instr_num_dsts(instr);
+	if(verbose & SHOW_INSTR)
+	{
+		int n1 = instr_num_srcs(instr);
+		int n2 = instr_num_dsts(instr);
 
-	dr_fprintf(f, PFX" ",  pc);
-	instr_disassemble(drcontext, instr, f);
-	dr_fprintf(f, "\t[%d, %d]\n",  n1, n2);
-#endif
+		dr_fprintf(f, PFX" ",  pc);
+		instr_disassemble(drcontext, instr, f);
+		dr_fprintf(f, "\t[%d, %d]\n",  n1, n2);
+	}
 }
 
 # define MAX_SYM_RESULT 256
@@ -813,9 +761,9 @@ print_address(file_t f, app_pc addr, const char *prefix, char* function = NULL, 
 
     data = dr_lookup_module(addr);
     if (data == NULL) {
-#ifdef SHOW_SYM
-		dr_fprintf(f, "%s "PFX" unknown ??:0\n", prefix, addr);
-#endif
+		if(verbose & SHOW_SYM)
+			dr_fprintf(f, "%s "PFX" unknown ??:0\n", prefix, addr);
+
 		strcpy(function, "unknown");
         return 0;
     }
@@ -834,14 +782,12 @@ print_address(file_t f, app_pc addr, const char *prefix, char* function = NULL, 
         modname = "<noname>";
     
 	if (symres == DRSYM_SUCCESS || symres == DRSYM_ERROR_LINE_NOT_AVAILABLE) {
-#ifdef SHOW_SYM
-       dr_fprintf(f, "%s "PFX" %s:%s\n", prefix, addr, modname, sym.name);
-#endif
+		if(verbose & SHOW_SYM)
+			dr_fprintf(f, "%s "PFX" %s:%s\n", prefix, addr, modname, sym.name);
 	} else {
 		sprintf(function, "%x", addr);
-#ifdef SHOW_SYM
-		dr_fprintf(f, "%s "PFX" %s:%s\n", prefix, addr, modname, function);
-#endif
+		if(verbose & SHOW_SYM)
+			dr_fprintf(f, "%s "PFX" %s:%s\n", prefix, addr, modname, function);
 	}
 
     dr_free_module_data(data);
@@ -887,6 +833,357 @@ static int lookup_syms(app_pc addr, char* module, char *function, int size)
 	dr_free_module_data(data);
 
 	return 0;
+}
+
+static void
+print_propagation(file_t f, int n1, int n2, instr_t* instr, dr_mcontext_t *mc)
+{
+	if((verbose & SHOW_PROPAGATION) == 0)
+		return;
+
+	//以下是打印源和目标数
+	if(n1 > 0) dr_fprintf(f, "src_opnd(");
+	for(int i = 0; i < n1; i++)
+	{
+		if(i > 0) dr_fprintf(f, ", ");
+		opnd_t src_opnd = instr_get_src(instr, i);
+		if(opnd_is_reg(src_opnd))
+			dr_fprintf(f, "reg:%d",  opnd_get_reg(src_opnd));
+		else if(opnd_is_memory_reference(src_opnd))
+			dr_fprintf(f, "mem:0x%08x", opnd_compute_address(src_opnd, mc));
+		else if(opnd_is_pc(src_opnd))
+			dr_fprintf(f, "pc:0x%08x", opnd_get_pc(src_opnd));//模块内部调用
+		else if(opnd_is_abs_addr(src_opnd))
+			dr_fprintf(f, "abs:0x%08x", opnd_get_addr(src_opnd));
+		else if(opnd_is_immed_int(src_opnd))
+			dr_fprintf(f, "imm:%d", opnd_get_immed_int(src_opnd));
+		/*else if(opnd_is_base_disp(src_opnd))
+			dr_fprintf(f, "%d:base+disp %d ", i);
+		else if(opnd_is_instr(src_opnd))
+			dr_fprintf(f, "%d:instr %d ", i);*/
+	}
+	if(n1 > 0) dr_fprintf(f, ") ");
+
+	if(n2 > 0) dr_fprintf(f, "dst_opnd(");
+	for(int i = 0; i < n2; i++)
+	{
+		if(i > 0) dr_fprintf(f, ", ");
+		opnd_t dst_opnd = instr_get_dst(instr, i);
+		if(opnd_is_reg(dst_opnd))
+			dr_fprintf(f, "reg:%d",  opnd_get_reg(dst_opnd));
+		else if(opnd_is_memory_reference(dst_opnd))
+			dr_fprintf(f, "mem:0x%08x", opnd_compute_address(dst_opnd, mc));
+		else if(opnd_is_pc(dst_opnd))
+			dr_fprintf(f, "pc:0x%08x", opnd_get_pc(dst_opnd));
+		else if(opnd_is_abs_addr(dst_opnd))
+			dr_fprintf(f, "abs:0x%08x", opnd_get_addr(dst_opnd));
+		else if(opnd_is_immed_int(dst_opnd))
+			dr_fprintf(f, "imm:%d", opnd_get_immed_int(dst_opnd));
+		/*else if(opnd_is_base_disp(dst_opnd))
+			dr_fprintf(f, "%d:base+disp %d ", i);
+		else if(opnd_is_instr(dst_opnd))
+			dr_fprintf(f, "%d:instr %d ", i);*/
+	}
+	if(n2 > 0) dr_fprintf(f, ")");
+
+	if(n1 || n2) dr_fprintf(f, "\n");
+}
+
+static bool 
+process_stack_shrink(memory_list& taint_memory, memory_list& stack_memory,
+					 app_pc stack_end, app_pc current_esp)
+{
+	if(stack_memory.remove(stack_end, current_esp))
+	{
+		taint_memory.remove(stack_end, current_esp);
+		return true;
+	}
+	return false;
+}
+
+static void
+clear_tag_eacbdx(reg_id_t reg, byte* taint_regs)
+{
+	if(reg == DR_REG_EAX){
+		taint_regs[DR_REG_AX] = 0;
+		taint_regs[DR_REG_AL] = 0;
+		taint_regs[DR_REG_AH] = 0;
+	} else if(reg == DR_REG_ECX){
+		taint_regs[DR_REG_CX] = 0;
+		taint_regs[DR_REG_CL] = 0;
+		taint_regs[DR_REG_CH] = 0;
+	} else if(reg == DR_REG_EBX){
+		taint_regs[DR_REG_BX] = 0;
+		taint_regs[DR_REG_BL] = 0;
+		taint_regs[DR_REG_BH] = 0;
+	} else if(reg == DR_REG_EDX){
+		taint_regs[DR_REG_DX] = 0;
+		taint_regs[DR_REG_DL] = 0;
+		taint_regs[DR_REG_DH] = 0;
+	}
+}
+
+static void 
+taint_propagation(app_pc pc)
+{
+	void* drcontext = dr_get_current_drcontext();
+	thread_data* data = (thread_data*)dr_get_tls_field(drcontext);
+	int& untrusted_function_calling = data->untrusted_function_calling;
+	
+	if(untrusted_function_calling) return;
+
+	file_t f = data->f;
+	byte* taint_regs = data->taint_regs;
+	memory_list& taint_memory = data->taint_memory;
+	memory_list& stack_memory = data->taint_memory_stack;
+	
+    dr_mcontext_t mc = {sizeof(mc),DR_MC_ALL};
+    dr_get_mcontext(drcontext, &mc);
+
+	instr_t instr;
+	instr_init(drcontext, &instr);
+	instr_reuse(drcontext, &instr);
+	decode(drcontext, pc, &instr);
+	
+	print_instr(drcontext, f, &instr, pc);
+
+	int opcode = instr_get_opcode(&instr);
+	int n1 = instr_num_srcs(&instr);
+	int n2 = instr_num_dsts(&instr);
+	bool src_tainted = false;
+	reg_t taint_reg = 0, tainting_reg = 0;
+	app_pc taint_addr = 0, tainting_addr = 0;
+
+	print_propagation(f, n1, n2, &instr, &mc);
+
+	if(opc_is_pop(opcode)){
+		if(n2 > 0){
+			opnd_t dst_opnd = instr_get_dst(&instr, 0);
+			if(!opnd_is_reg(dst_opnd)) return;
+			
+			reg_id_t reg = opnd_get_reg(dst_opnd);
+			
+			app_pc value;
+			size_t size;
+			dr_safe_read((void *)mc.esp, 4, &value, &size);
+		
+			if(data->taint_memory.find(value) == false)
+			{
+				taint_regs[reg] = 0;
+				clear_tag_eacbdx(reg, taint_regs);
+			}
+		}
+		return;
+	} else if(opcode == OP_xor){ /* xor eax, eax */
+		if(n1 != 2)	return;
+
+		opnd_t opnd1 = instr_get_src(&instr, 0);
+		opnd_t opnd2 = instr_get_src(&instr, 1);
+		if(!opnd_is_reg(opnd1) || !opnd_is_reg(opnd2))
+			return;
+		reg_id_t reg1 = opnd_get_reg(opnd1);
+		reg_id_t reg2 = opnd_get_reg(opnd2);
+		if(reg1 != reg2) return;
+		
+		taint_regs[reg1] = 0;
+		clear_tag_eacbdx(reg1, taint_regs);
+	} else if(opcode == OP_sub && n1 == 2 && n2 == 1){ // sub $0x00000010 %esp -> %esp
+		opnd_t opnd, opnd2;
+		if(opnd_is_reg(opnd=instr_get_src(&instr,1)) && opnd_get_reg(opnd)==DR_REG_ESP &&
+			opnd_is_immed_int(opnd2=instr_get_src(&instr,0)))
+				data->stack_end = (app_pc)mc.esp - opnd_get_immed_int(opnd2);
+	} else if(opc_is_move(opcode) && n1==1 && n2==1){//mov %ebp -> %esp
+		opnd_t src_opnd, dst_opnd;
+		if(opnd_is_reg(src_opnd=instr_get_src(&instr,0)) && opnd_get_reg(src_opnd)==DR_REG_EBP &&
+			opnd_is_reg(dst_opnd=instr_get_dst(&instr,0)) && opnd_get_reg(dst_opnd)==DR_REG_ESP){
+				data->stack_end = (app_pc)mc.ebp;
+				if(process_stack_shrink(taint_memory, stack_memory, (app_pc)mc.esp, (app_pc)mc.ebp))
+					dr_fprintf(f, "[-Taint-] remove memory "PFX"-"PFX"\n", (app_pc)mc.esp, (app_pc)mc.ebp);
+		}
+	}
+
+	//以下是污点传播
+	if(n1 && n2)
+	{
+		int type = -1;
+		opnd_t src_opnd;
+		
+		for(int i = 0; i < n1; i++)
+		{
+			src_opnd = instr_get_src(&instr, i);
+			if(opnd_is_reg(src_opnd) && 
+				taint_regs[taint_reg = opnd_get_reg(src_opnd)] == 1)
+			{
+				src_tainted = true;
+				type = 0;
+				break;
+			}
+			else if(opnd_is_memory_reference(src_opnd) && 
+				taint_memory.find(taint_addr = opnd_compute_address(src_opnd, &mc)))
+			{
+				src_tainted = true;
+				type = 1;
+				break;
+			}
+			else if(opnd_is_pc(src_opnd) && 
+				taint_memory.find(taint_addr = opnd_get_pc(src_opnd)))
+			{
+				src_tainted = true;
+				type = 2;
+				break;
+			}
+		}
+
+		opnd_t dst_opnd = instr_get_dst(&instr, 0);
+
+		if(src_tainted)//污染标记
+		{
+			dr_fprintf(f, "\t$$$$ taint ");
+
+			if(type == 0)
+				//dr_fprintf(f, "reg:%d ", taint_reg);
+				opnd_disassemble(drcontext, src_opnd, f);
+			else if(type == 1)
+				dr_fprintf(f, "$mem:0x%08x ", taint_addr);
+			else if(type == 2)
+				dr_fprintf(f, "mem:0x%08x ", taint_addr);
+
+			if(opnd_is_reg(dst_opnd))
+				taint_regs[tainting_reg = opnd_get_reg(dst_opnd)] = 1;
+
+			else if(opnd_is_memory_reference(dst_opnd))
+				taint_memory.insert_sort(tainting_addr = opnd_compute_address(dst_opnd, &mc));
+		
+			else if(opnd_is_pc(dst_opnd))
+				taint_memory.insert_sort(tainting_addr = opnd_get_pc(dst_opnd));
+
+			if(tainting_addr == 0)
+			{
+				//dr_fprintf(f, "---> reg:%d ", tainting_reg);
+				dr_fprintf(f, "---> ");
+				opnd_disassemble(drcontext, dst_opnd, f);
+			}
+			else
+				dr_fprintf(f, "---> mem:0x%08x ", tainting_addr);
+
+			dr_fprintf(f, " $$$$\n");
+		} 
+		else//清除标记
+		{
+			if(opnd_is_reg(dst_opnd))
+			{
+				taint_regs[tainting_reg = opnd_get_reg(dst_opnd)] = 0;
+				clear_tag_eacbdx(tainting_reg, taint_regs);
+			}
+			else if(opnd_is_memory_reference(dst_opnd))
+			{
+				app_pc addr = opnd_compute_address(dst_opnd, &mc);
+				taint_memory.remove(addr, addr+1);
+				stack_memory.remove(addr, addr+1);
+			}
+
+		}
+	}
+
+	instr_free(drcontext, &instr);
+}
+
+static void 
+taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
+{
+	thread_data* data = (thread_data*)dr_get_tls_field(drcontext);
+	int& untrusted_function_calling = data->untrusted_function_calling;
+	app_pc& return_address = data->return_address;
+	
+	if(untrusted_function_calling == 0 || return_address != pc)	
+		return;
+
+	file_t f = data->f;
+	int& read_size_id = data->read_size_id;
+	int& read_size_ref = data->read_size_ref;
+	int& return_status = data->succeed_return_status;
+	int& char_buffer = data->char_buffer;
+	app_pc& read_size_offset = data->read_size_offset;
+	app_pc& read_buffer = data->read_buffer;
+	int& read_size = data->read_size;
+	int in_size = data->read_size;
+	memory_list& taint_memory = data->taint_memory;
+	memory_list& stack_memory = data->taint_memory_stack;
+	
+	dr_fprintf(f, "Thread %d: function return status "PFX "\n", data->thread_id, mc->eax);
+	
+	//通过返回值判断函数调用是否失败
+	if((return_status > 0 && (int)mc->eax <= 0) || (return_status == 0 && mc->eax != 0))
+	{
+		dr_fprintf(f, "Failed to call function\n");
+		untrusted_function_calling = 0;
+		return;
+	}
+
+	int value;
+	size_t size;
+		
+	if(read_size_id >= 0)
+	{
+		if(read_size_id == 0)
+			value = mc->eax;
+		else
+			dr_safe_read(read_size_offset, 4, &value, &size);
+
+		if(read_size_ref)
+			dr_safe_read((void *)value, 4, &value, &size);
+
+		read_size = value;
+	}
+
+	if(char_buffer)//普通的字符串，无需特别处理
+	{
+		taint_memory.insert_sort(range(read_buffer, read_buffer+read_size));
+		dr_fprintf(f, "[Out] Read Size "PFX"\n", read_size);
+
+		if(within_global_stack(read_buffer, data->stack_base, data->stack_end))
+		{
+			range r(read_buffer, read_buffer+read_size);
+			stack_memory.insert_sort(r);
+			dr_fprintf(f, "[+Taint+] add memory "PFX"-"PFX" [S]\n", r.start, r.end);
+		}
+	}
+	else
+	{
+		//处理其他缓冲区，这里处理_WSABUF的情况
+		//struct WSABUF { ULONG len; CHAR *buf; }
+		size_t n = 0; 
+		app_pc addr;
+		for(int i = 0; i < in_size; i++) //in_size UDP一般为2，TCP为1
+		{
+			dr_safe_read(read_buffer+i*8, 4, &value, &size);
+			if(value <= 0) continue;
+			if(i > 0)	value = read_size - n;
+
+			dr_fprintf(f, "[Out] len "PFX"\n", value);
+
+			n += (size_t)value;
+
+			dr_safe_read(read_buffer+i*8+4, 4, &addr, &size);
+			dr_fprintf(f, "[Out] buf "PFX"\n", addr);
+
+			if(in_size == 1 || (in_size == 2 && i > 0))
+			{
+				dr_fprintf(f, "[Out] Taint memory "PFX" %d\n", addr, value);
+				taint_memory.insert_sort(range(addr, addr+value));
+
+				if(within_global_stack(read_buffer, data->stack_base, data->stack_end))
+				{
+					range r(addr, addr+value);
+					stack_memory.insert_sort(r);
+					dr_fprintf(f, "[+Taint+] memory "PFX"-"PFX" [S]\n", r.start, r.end);
+				}
+			}
+
+		}
+	}
+
+	untrusted_function_calling = 0;
 }
 
 static int
@@ -1071,9 +1368,14 @@ at_return(app_pc instr_addr, app_pc target_addr)
 		return;
 	}
 
-
 	file_t f = data->f;
 	function_tables& funcs = data->funcs;
+	memory_list& stack_memory = data->taint_memory_stack;
+	dr_mcontext_t mc = {sizeof(mc),DR_MC_ALL};
+	dr_get_mcontext(drcontext, &mc);
+			
+	if(process_stack_shrink(data->taint_memory, stack_memory, data->stack_end, (app_pc)mc.esp))
+		dr_fprintf(f, "[-Taint-] remove memory "PFX"-"PFX"\n", data->stack_end, (app_pc)mc.esp);
 
 	char func1[MAX_SYM_RESULT], func2[MAX_SYM_RESULT];
     print_address(f, instr_addr, "[RETURN @ ]", func1, MAX_SYM_RESULT);
@@ -1179,306 +1481,6 @@ at_others(app_pc pc)
 	instr_free(drcontext, &instr);
 }
 
-static void
-clear_tag_eacbdx(reg_id_t reg, byte* taint_regs)
-{
-	if(reg == DR_REG_EAX){
-		taint_regs[DR_REG_AX] = 0;
-		taint_regs[DR_REG_AL] = 0;
-		taint_regs[DR_REG_AH] = 0;
-	} else if(reg == DR_REG_ECX){
-		taint_regs[DR_REG_CX] = 0;
-		taint_regs[DR_REG_CL] = 0;
-		taint_regs[DR_REG_CH] = 0;
-	} else if(reg == DR_REG_EBX){
-		taint_regs[DR_REG_BX] = 0;
-		taint_regs[DR_REG_BL] = 0;
-		taint_regs[DR_REG_BH] = 0;
-	} else if(reg == DR_REG_EDX){
-		taint_regs[DR_REG_DX] = 0;
-		taint_regs[DR_REG_DL] = 0;
-		taint_regs[DR_REG_DH] = 0;
-	}
-}
-
-static void 
-taint_propagation(app_pc pc)
-{
-	void* drcontext = dr_get_current_drcontext();
-	thread_data* data = (thread_data*)dr_get_tls_field(drcontext);
-	int& untrusted_function_calling = data->untrusted_function_calling;
-	
-	if(untrusted_function_calling) return;
-
-	file_t f = data->f;
-	byte* taint_regs = data->taint_regs;
-	memory_list& taint_memory = data->taint_memory;
-	
-    dr_mcontext_t mc = {sizeof(mc),DR_MC_ALL};
-    dr_get_mcontext(drcontext, &mc);
-
-	instr_t instr;
-	instr_init(drcontext, &instr);
-	instr_reuse(drcontext, &instr);
-	decode(drcontext, pc, &instr);
-	
-	print_instr(drcontext, f, &instr, pc);
-
-	int opcode = instr_get_opcode(&instr);
-	int n1 = instr_num_srcs(&instr);
-	int n2 = instr_num_dsts(&instr);
-	bool src_tainted = false;
-	reg_t taint_reg = 0, tainting_reg = 0;
-	app_pc taint_addr = 0, tainting_addr = 0;
-
-#ifdef SHOW_PROPAGATION
-	//以下是打印源和目标数
-	if(n1 > 0) dr_fprintf(f, "src_opnd(");
-	for(int i = 0; i < n1; i++)
-	{
-		if(i > 0) dr_fprintf(f, ", ");
-		opnd_t src_opnd = instr_get_src(&instr, i);
-		if(opnd_is_reg(src_opnd))
-			dr_fprintf(f, "reg:%d",  opnd_get_reg(src_opnd));
-		else if(opnd_is_memory_reference(src_opnd))
-			dr_fprintf(f, "mem:0x%08x", opnd_compute_address(src_opnd, &mc));
-		else if(opnd_is_pc(src_opnd))
-			dr_fprintf(f, "pc:0x%08x", opnd_get_pc(src_opnd));//模块内部调用
-		else if(opnd_is_abs_addr(src_opnd))
-			dr_fprintf(f, "abs:0x%08x", opnd_get_addr(src_opnd));
-		else if(opnd_is_immed_int(src_opnd))
-			dr_fprintf(f, "imm:%d", opnd_get_immed_int(src_opnd));
-		/*else if(opnd_is_base_disp(src_opnd))
-			dr_fprintf(f, "%d:base+disp %d ", i);
-		else if(opnd_is_instr(src_opnd))
-			dr_fprintf(f, "%d:instr %d ", i);*/
-	}
-	if(n1 > 0) dr_fprintf(f, ") ");
-
-	if(n2 > 0) dr_fprintf(f, "dst_opnd(");
-	for(int i = 0; i < n2; i++)
-	{
-		if(i > 0) dr_fprintf(f, ", ");
-		opnd_t dst_opnd = instr_get_dst(&instr, i);
-		if(opnd_is_reg(dst_opnd))
-			dr_fprintf(f, "reg:%d",  opnd_get_reg(dst_opnd));
-		else if(opnd_is_memory_reference(dst_opnd))
-			dr_fprintf(f, "mem:0x%08x", opnd_compute_address(dst_opnd, &mc));
-		else if(opnd_is_pc(dst_opnd))
-			dr_fprintf(f, "pc:0x%08x", opnd_get_pc(dst_opnd));
-		else if(opnd_is_abs_addr(dst_opnd))
-			dr_fprintf(f, "abs:0x%08x", opnd_get_addr(dst_opnd));
-		else if(opnd_is_immed_int(dst_opnd))
-			dr_fprintf(f, "imm:%d", opnd_get_immed_int(dst_opnd));
-		/*else if(opnd_is_base_disp(dst_opnd))
-			dr_fprintf(f, "%d:base+disp %d ", i);
-		else if(opnd_is_instr(dst_opnd))
-			dr_fprintf(f, "%d:instr %d ", i);*/
-	}
-	if(n2 > 0) dr_fprintf(f, ")");
-
-	if(n1 || n2) dr_fprintf(f, "\n");
-#endif
-
-	if(opc_is_pop(opcode)){
-		if(n2 > 0){
-			opnd_t dst_opnd = instr_get_dst(&instr, 0);
-			if(!opnd_is_reg(dst_opnd)) return;
-			
-			reg_id_t reg = opnd_get_reg(dst_opnd);
-			
-			app_pc value;
-			size_t size;
-			dr_safe_read((void *)mc.esp, 4, &value, &size);
-		
-			if(data->taint_memory.find(value) == false)
-			{
-				taint_regs[reg] = 0;
-				clear_tag_eacbdx(reg, taint_regs);
-			}
-		}
-		return;
-	} else if(opcode == OP_xor){ /* xor eax, eax */
-		if(n1 != 2)	return;
-
-		opnd_t opnd1 = instr_get_src(&instr, 0);
-		opnd_t opnd2 = instr_get_src(&instr, 1);
-		if(!opnd_is_reg(opnd1) || !opnd_is_reg(opnd2))
-			return;
-		reg_id_t reg1 = opnd_get_reg(opnd1);
-		reg_id_t reg2 = opnd_get_reg(opnd2);
-		if(reg1 != reg2) return;
-		
-		taint_regs[reg1] = 0;
-		clear_tag_eacbdx(reg1, taint_regs);
-	}
-
-	//以下是污点传播
-	if(n1 && n2)
-	{
-		int type = -1;
-		opnd_t src_opnd;
-		
-		for(int i = 0; i < n1; i++)
-		{
-			src_opnd = instr_get_src(&instr, i);
-			if(opnd_is_reg(src_opnd) && 
-				taint_regs[taint_reg = opnd_get_reg(src_opnd)] == 1)
-			{
-				src_tainted = true;
-				type = 0;
-				break;
-			}
-			else if(opnd_is_memory_reference(src_opnd) && 
-				taint_memory.find(taint_addr = opnd_compute_address(src_opnd, &mc)))
-			{
-				src_tainted = true;
-				type = 1;
-				break;
-			}
-			else if(opnd_is_pc(src_opnd) && 
-				taint_memory.find(taint_addr = opnd_get_pc(src_opnd)))
-			{
-				src_tainted = true;
-				type = 2;
-				break;
-			}
-		}
-
-		opnd_t dst_opnd = instr_get_dst(&instr, 0);
-
-		if(src_tainted)//污染标记
-		{
-			dr_fprintf(f, "\t$$$$ taint ");
-
-			if(type == 0)
-				//dr_fprintf(f, "reg:%d ", taint_reg);
-				opnd_disassemble(drcontext, src_opnd, f);
-			else if(type == 1)
-				dr_fprintf(f, "$mem:0x%08x ", taint_addr);
-			else if(type == 2)
-				dr_fprintf(f, "mem:0x%08x ", taint_addr);
-
-			if(opnd_is_reg(dst_opnd))
-				taint_regs[tainting_reg = opnd_get_reg(dst_opnd)] = 1;
-
-			else if(opnd_is_memory_reference(dst_opnd))
-				taint_memory.insert_sort(tainting_addr = opnd_compute_address(dst_opnd, &mc));
-		
-			else if(opnd_is_pc(dst_opnd))
-				taint_memory.insert_sort(tainting_addr = opnd_get_pc(dst_opnd));
-
-			if(tainting_addr == 0)
-			{
-				//dr_fprintf(f, "---> reg:%d ", tainting_reg);
-				dr_fprintf(f, "---> ");
-				opnd_disassemble(drcontext, dst_opnd, f);
-			}
-			else
-				dr_fprintf(f, "---> mem:0x%08x ", tainting_addr);
-
-			dr_fprintf(f, " $$$$\n");
-		} 
-		else//清除标记
-		{
-			if(opnd_is_reg(dst_opnd))
-			{
-				taint_regs[tainting_reg = opnd_get_reg(dst_opnd)] = 0;
-				clear_tag_eacbdx(tainting_reg, taint_regs);
-			}
-		}
-	}
-
-	instr_free(drcontext, &instr);
-}
-
-static void 
-taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
-{
-	thread_data* data = (thread_data*)dr_get_tls_field(drcontext);
-	int& untrusted_function_calling = data->untrusted_function_calling;
-	app_pc& return_address = data->return_address;
-	
-	if(untrusted_function_calling == 0 || return_address != pc)	
-		return;
-
-	file_t f = data->f;
-	int& read_size_id = data->read_size_id;
-	int& read_size_ref = data->read_size_ref;
-	int& return_status = data->succeed_return_status;
-	int& char_buffer = data->char_buffer;
-	app_pc& read_size_offset = data->read_size_offset;
-	app_pc& read_buffer = data->read_buffer;
-	int& read_size = data->read_size;
-	int in_size = data->read_size;
-	memory_list& taint_memory = data->taint_memory;
-	
-	dr_fprintf(f, "Thread %d: function return status "PFX "\n", data->thread_id, mc->eax);
-	
-	//通过返回值判断函数调用是否失败
-	if((return_status > 0 && (int)mc->eax <= 0) || (return_status == 0 && mc->eax != 0))
-	{
-		dr_fprintf(f, "Failed to call function\n");
-		untrusted_function_calling = 0;
-		return;
-	}
-
-	int value;
-	size_t size;
-		
-	if(read_size_id >= 0)
-	{
-		if(read_size_id == 0)
-			value = mc->eax;
-		else
-			dr_safe_read(read_size_offset, 4, &value, &size);
-
-		if(read_size_ref)
-			dr_safe_read((void *)value, 4, &value, &size);
-
-		read_size = value;
-	}
-
-	if(char_buffer)//普通的字符串，无需特别处理
-	{
-		taint_memory.insert_sort(range(read_buffer, read_buffer+read_size));
-		dr_fprintf(f, "[Out] Read Size "PFX"\n", read_size);
-		dr_fprintf(f, "within_global_stack=%d\n", within_global_stack(read_buffer,
-			data->stack_base, data->stack_end));
-	}
-	else
-	{
-		//处理其他缓冲区，这里处理_WSABUF的情况
-		//struct WSABUF { ULONG len; CHAR *buf; }
-		size_t n = 0; 
-		app_pc addr;
-		for(int i = 0; i < in_size; i++) //in_size UDP一般为2，TCP为1
-		{
-			dr_safe_read(read_buffer+i*8, 4, &value, &size);
-			if(value <= 0) continue;
-			if(i > 0)	value = read_size - n;
-
-			dr_fprintf(f, "[Out] len "PFX"\n", value);
-
-			n += (size_t)value;
-
-			dr_safe_read(read_buffer+i*8+4, 4, &addr, &size);
-			dr_fprintf(f, "[Out] buf "PFX"\n", addr);
-
-			if(in_size == 1 || (in_size == 2 && i > 0))
-			{
-				dr_fprintf(f, "[Out] Taint memory "PFX" %d\n", addr, value);
-				dr_fprintf(f, "within_global_stack=%d\n", within_global_stack(addr,
-					data->stack_base, data->stack_end));
-				taint_memory.insert_sort(range(addr, addr+value));
-			}
-
-		}
-	}
-
-	untrusted_function_calling = 0;
-}
-
 static dr_emit_flags_t
 event_basic_block(void *drcontext, void *tag, instrlist_t *bb,
                   bool for_trace, bool translating)
@@ -1493,6 +1495,12 @@ event_basic_block(void *drcontext, void *tag, instrlist_t *bb,
 	dr_get_mcontext(drcontext, &mc);
 	block_cnt ++;
 	int insert_count = 0;
+
+	if(data->stack_base == 0)
+	{
+		data->stack_base = (app_pc)mc.ebp;
+		data->stack_end = (app_pc)mc.esp;
+	}
 
 	//如果没有调用可疑函数，则可以直接跳过白名单
 	if(data->untrusted_function_calling == 0 && within_whitelist((app_pc)tag))
@@ -1550,9 +1558,17 @@ event_module_load(void *drcontext, const module_data_t *info, bool loaded)
     name = dr_module_preferred_name(info);
 	if (name == NULL) name = "";
 
-	if(global_log != INVALID_FILE)
-		dr_fprintf(global_log, "\nmodule load event: \"%s\" "PFX"-"PFX" %s\n",
-               name, info->start, info->end, info->full_path);
+	dr_fprintf(global_log, "\nmodule load event: \"%s\" "PFX"-"PFX" %s\n",
+		name, info->start, info->end, info->full_path);
+
+	for(int i = 0; i < sizeof(black_dll)/sizeof(black_dll[0]); i++)
+	{
+		if(text_matches_any_pattern(name, black_dll[i], true))
+		{
+			dr_fprintf(global_log, "couldnot skip this module\n");
+			return;
+		}
+	}
 
 	if(text_matches_any_pattern(info->full_path, whitelist_lib, true))
 	{
@@ -1563,10 +1579,9 @@ event_module_load(void *drcontext, const module_data_t *info, bool loaded)
 	{
 		for(int i = 0; i < sizeof(white_dll)/sizeof(white_dll[0]); i++)
 		{
-			if(info->names.module_name &&
-				_stricmp(white_dll[i], info->names.module_name) == 0)
+			if(_stricmp(white_dll[i], name) == 0)
 			{
-				dr_fprintf(global_log, "whitelist module %s\n", info->names.module_name);
+				dr_fprintf(global_log, "whitelist module %s\n", name);
 				skip_list.insert_sort(range(info->start, info->end));
 				break;
 			}
@@ -1609,9 +1624,66 @@ event_thread_exit(void *drcontext)
 
 	for(memory_list::iterator it = data->taint_memory.begin();
 		it != data->taint_memory.end(); it++)
-		dr_fprintf(f, PFX"-"PFX"\n", it->start, it->end);
+		dr_fprintf(f, PFX"-"PFX" Size:%d\n", it->start, it->end, it->end-it->start);
 
     close_file(f);
 
 	delete data;
+}
+
+static void 
+event_exit(void)
+{
+    dr_mutex_destroy(stats_mutex);
+
+	close_file(global_log);
+}
+
+DR_EXPORT void 
+dr_init(client_id_t id)
+{
+    const char* opstr;
+	module_data_t *data;
+
+	my_id = id;
+	process_options(opstr = dr_get_options(my_id));
+	appnm = dr_get_application_name();
+	stats_mutex = dr_mutex_create();
+
+#ifdef WINDOWS
+	TEB* teb = get_TEB();
+    data = dr_lookup_module((byte*)teb->ProcessEnvironmentBlock->ImageBaseAddress);
+#else
+    if (appnm == NULL)
+        data = NULL;
+    else
+        data = dr_lookup_module_by_name(appnm);
+#endif
+    if (data) {
+        app_base = data->start;
+        app_end = data->end;
+        dr_snprintf(app_path, BUFFER_SIZE_ELEMENTS(app_path), data->full_path);
+        NULL_TERMINATE_BUFFER(app_path);
+        dr_free_module_data(data);
+    }
+
+	create_global_logfile(logsubdir);
+
+	dr_fprintf(global_log, "options are \"%s\"\n", opstr);
+	dr_fprintf(global_log, "executable \"%s\" is "PFX"-"PFX"\n", app_path, app_base, app_end);
+	dr_fprintf(global_log, "verbose is "PFX"\n", verbose);
+
+	if (drsym_init(IF_WINDOWS_ELSE(NULL, 0)) != DRSYM_SUCCESS) {
+        dr_log(NULL, LOG_ALL, 1, "WARNING: unable to initialize symbol translation\n");
+    }
+
+# ifdef WINDOWS
+    dr_enable_console_printing();
+# endif
+    
+	dr_register_bb_event(event_basic_block);
+    dr_register_exit_event(event_exit);
+	dr_register_module_load_event(event_module_load);
+    dr_register_thread_init_event(event_thread_init);
+    dr_register_thread_exit_event(event_thread_exit);
 }

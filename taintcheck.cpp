@@ -292,7 +292,7 @@ text_matches_any_pattern(const char *text, const char *patterns, bool ignore_cas
 }
 
 struct range {
-	app_pc start, end;
+	app_pc start, end;//[start, end)
 
 	range(app_pc start, app_pc end) : start(start),end(end) {}
 
@@ -325,7 +325,7 @@ private:
 	bool aggressive;
 
 	inline static bool is_adjacent(const range &left, const range &right) {
-		return (left.end==right.start-1);
+		return (left.end==right.start);
 	}
 
 	inline static bool is_semiadjacent(const range &left, const range &right) {
@@ -428,6 +428,31 @@ public:
 		iterator end = std::unique(_ranges.begin(), _ranges.end(), merge_pred(aggressive));
 		if(end != _ranges.end())
 			_ranges.erase(end, _ranges.end());
+	}
+
+	void remove(app_pc start, app_pc end){
+		iterator it1, it2;
+		if(within(start, &it1)==_ranges.end() && 
+			within(end, &it2)==_ranges.end() && 
+			it1 == it2)
+			return;
+		
+		insert_sort(range(start, end));
+
+		iterator it = within(start);
+		if(it != _ranges.end()){
+			if(it->start == start){
+				if(it->end == end) _ranges.erase(it);
+				else it->start = end;//[0,100)-[0,11)=[11,100)
+			}
+			else if(it->end == end)//[0,100)-[11,100)=[0,11)
+				it->end = start;
+			else{//[0,100)-[11,90)=[0,11)+[90,100) 
+				app_pc old_end = it->end;
+				it->end = start;
+				_ranges.insert(++it, range(end, old_end));
+			}
+		}
 	}
 
 	bool find(app_pc pc){
@@ -738,20 +763,15 @@ dr_init(client_id_t id)
 
 	dr_fprintf(global_log, "options are \"%s\"\n", opstr);
 	dr_fprintf(global_log, "executable \"%s\" is "PFX"-"PFX"\n", app_path, app_base, app_end);
-	
-	if (drsym_init(0) != DRSYM_SUCCESS) {
+
+	if (drsym_init(IF_WINDOWS_ELSE(NULL, 0)) != DRSYM_SUCCESS) {
         dr_log(NULL, LOG_ALL, 1, "WARNING: unable to initialize symbol translation\n");
     }
 
-    if (dr_is_notify_on()) 
-	{
 # ifdef WINDOWS
-        /* ask for best-effort printing to cmd window.  must be called in dr_init(). */
-        dr_enable_console_printing();
+    dr_enable_console_printing();
 # endif
-        dr_fprintf(STDOUT, "Client taintchecklib is running\n");
-    }
-
+    
 	dr_register_bb_event(event_basic_block);
     dr_register_exit_event(event_exit);
 	dr_register_module_load_event(event_module_load);
@@ -1282,7 +1302,7 @@ taint_propagation(app_pc pc)
 		if(n1 != 2)	return;
 
 		opnd_t opnd1 = instr_get_src(&instr, 0);
-		opnd_t opnd2 = instr_get_src(&instr, 0);
+		opnd_t opnd2 = instr_get_src(&instr, 1);
 		if(!opnd_is_reg(opnd1) || !opnd_is_reg(opnd2))
 			return;
 		reg_id_t reg1 = opnd_get_reg(opnd1);
@@ -1445,6 +1465,7 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 			dr_safe_read(read_buffer+i*8+4, 4, &addr, &size);
 			dr_fprintf(f, "[Out] buf "PFX"\n", addr);
 
+			if(in_size == 1 || (in_size == 2 && i > 0))
 			{
 				dr_fprintf(f, "[Out] Taint memory "PFX" %d\n", addr, value);
 				dr_fprintf(f, "within_global_stack=%d\n", within_global_stack(addr,

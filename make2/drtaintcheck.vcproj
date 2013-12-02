@@ -60,7 +60,7 @@
 				RuntimeLibrary="2"
 				AssemblerListingLocation="Release"
 				ObjectFile="$(IntDir)\"
-				ProgramDataBaseFileName="..\..\samples\make2\bin/drtaintcheck.pdb"
+				ProgramDataBaseFileName="bin/drtaintcheck.pdb"
 				WarningLevel="3"
 				CompileAs="1"
 			/>
@@ -80,13 +80,13 @@
 				LinkLibraryDependencies="false"
 				AdditionalOptions=" /machine:X86 /nodefaultlib"
 				AdditionalDependencies="$(NOINHERIT) kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib libcmt.lib ..\..\lib32\release\dynamorio.lib ..\..\lib32\drinjectlib.lib ..\..\lib32\drconfiglib.lib libcmt.lib ..\..\lib32\release\drdecode.lib ..\..\lib32\ntdll_imports.lib kernel32.lib advapi32.lib imagehlp.lib "
-				OutputFile="..\..\samples\make2\bin\drtaintcheck.exe"
+				OutputFile="bin\drtaintcheck.exe"
 				Version="0.0"
 				LinkIncremental="1"
 				AdditionalLibraryDirectories=""
-				ProgramDatabaseFile="..\..\samples\make2\bin/drtaintcheck.pdb"
+				ProgramDatabaseFile="bin/drtaintcheck.pdb"
 				SubSystem="1"
-				ImportLibrary="..\..\samples\make2\bin\release\drtaintcheck.lib"
+				ImportLibrary="bin\release\drtaintcheck.lib"
 			/>
 			<Tool
 				Name="VCALinkTool"
@@ -118,7 +118,7 @@
 			Name="Source Files"
 			>
 			<File
-				RelativePath="..\..\samples\drtaintcheck_frontend.c"
+				RelativePath="..\drtaintcheck_frontend.c"
 				>
 				<FileConfiguration
 					Name="Release|Win32"

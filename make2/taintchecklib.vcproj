@@ -61,7 +61,7 @@
 				RuntimeTypeInfo="true"
 				AssemblerListingLocation="Release"
 				ObjectFile="$(IntDir)\"
-				ProgramDataBaseFileName="..\..\samples\make2\bin\release/taintchecklib.pdb"
+				ProgramDataBaseFileName="bin\release/taintchecklib.pdb"
 				WarningLevel="3"
 				CompileAs="2"
 			/>
@@ -81,12 +81,12 @@
 				LinkLibraryDependencies="false"
 				AdditionalOptions=" /machine:X86 /nodefaultlib:libcmt /dynamicbase:no /nxcompat /safeseh:no /opt:ref /opt:icf /debug"
 				AdditionalDependencies="$(NOINHERIT) kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib libcmt.lib dynamorio\lib32\release\dynamorio.lib dynamorio\ext\lib32\release\drcontainers.lib dynamorio\ext\lib32\release\drmgr.lib dynamorio\ext\lib32\release\drx.lib dynamorio\ext\lib32\release\drutil.lib dynamorio\ext\lib32\release\drwrap.lib dynamorio\ext\lib32\release\drsyms.lib dynamorio\core\ntdll_imports.lib libcpmt.lib dbghelp.lib dynamorio\lib32\dbghelp_imports.lib dynamorio\lib32\dwarf.lib dynamorio\lib32\elftc.lib dynamorio\core\ntdll_imports.lib libcmt.lib dynamorio\ext\lib32\release\drcontainers.lib dynamorio\ext\lib32\release\drmgr.lib dynamorio\ext\lib32\release\drx.lib dynamorio\lib32\release\dynamorio.lib &#x0A;"
-				OutputFile="..\..\samples\make2\bin\release\taintchecklib.dll"
+				OutputFile="bin\release\taintchecklib.dll"
 				Version="0.0"
 				LinkIncremental="1"
 				AdditionalLibraryDirectories=""
-				ProgramDatabaseFile="..\..\samples\make2\bin\release\taintchecklib.pdb"
-				ImportLibrary="..\..\samples\make2\bin\release\taintchecklib.lib"
+				ProgramDatabaseFile="bin\release\taintchecklib.pdb"
+				ImportLibrary="bin\release\taintchecklib.lib"
 			/>
 			<Tool
 				Name="VCALinkTool"
@@ -118,7 +118,7 @@
 			Name="Source Files"
 			>
 			<File
-				RelativePath="..\..\samples\taintcheck.cpp"
+				RelativePath="..\taintcheck.cpp"
 				>
 				<FileConfiguration
 					Name="Release|Win32"

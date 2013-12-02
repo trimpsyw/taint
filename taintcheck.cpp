@@ -1038,15 +1038,16 @@ taint_propagation(app_pc pc)
 
 		if(src_tainted)//污染标记
 		{
-			dr_fprintf(f, "\t$$$$ taint ");
-
-			if(type == 0)
-				//dr_fprintf(f, "reg:%d ", taint_reg);
-				opnd_disassemble(drcontext, src_opnd, f);
-			else if(type == 1)
-				dr_fprintf(f, "$mem:0x%08x ", taint_addr);
-			else if(type == 2)
-				dr_fprintf(f, "mem:0x%08x ", taint_addr);
+			if(verbose & SHOW_TAINTING)	
+			{
+				dr_fprintf(f, "\t$$$$ taint ");
+				if(type == 0)
+					opnd_disassemble(drcontext, src_opnd, f);
+				else if(type == 1)
+					dr_fprintf(f, "$mem:0x%08x ", taint_addr);
+				else if(type == 2)
+					dr_fprintf(f, "mem:0x%08x ", taint_addr);
+			}
 
 			if(opnd_is_reg(dst_opnd))
 				taint_regs[tainting_reg = opnd_get_reg(dst_opnd)] = 1;
@@ -1057,16 +1058,18 @@ taint_propagation(app_pc pc)
 			else if(opnd_is_pc(dst_opnd))
 				taint_memory.insert_sort(tainting_addr = opnd_get_pc(dst_opnd));
 
-			if(tainting_addr == 0)
+			if(verbose & SHOW_TAINTING)	
 			{
-				//dr_fprintf(f, "---> reg:%d ", tainting_reg);
-				dr_fprintf(f, "---> ");
-				opnd_disassemble(drcontext, dst_opnd, f);
-			}
-			else
-				dr_fprintf(f, "---> mem:0x%08x ", tainting_addr);
+				if(tainting_addr == 0)
+				{
+					dr_fprintf(f, "---> ");
+					opnd_disassemble(drcontext, dst_opnd, f);
+				}
+				else
+					dr_fprintf(f, "---> mem:0x%08x ", tainting_addr);
 
-			dr_fprintf(f, " $$$$\n");
+				dr_fprintf(f, " $$$$\n");
+			}
 		} 
 		else//清除标记
 		{

@@ -1705,7 +1705,8 @@ event_thread_exit(void *drcontext)
 		it != data->taint_memory.end(); it++)
 		dr_fprintf(f, PFX"-"PFX" Size:%d\n", it->start, it->end, it->end-it->start);
 
-    close_file(f);
+	dr_fprintf(f, "---- log end for thread %d ----\n", data->thread_id);
+	close_file(f);
 
 	delete data;
 }
@@ -1715,6 +1716,7 @@ event_exit(void)
 {
     dr_mutex_destroy(stats_mutex);
 
+	dr_fprintf(global_log, "====== log end ======\n");
 	close_file(global_log);
 }
 

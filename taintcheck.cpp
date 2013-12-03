@@ -927,180 +927,6 @@ clear_tag_eacbdx(reg_id_t reg, byte* taint_regs)
 }
 
 static void 
-taint_propagation(app_pc pc)
-{
-	void* drcontext = dr_get_current_drcontext();
-	thread_data* data = (thread_data*)dr_get_tls_field(drcontext);
-	int& untrusted_function_calling = data->untrusted_function_calling;
-	
-	if(untrusted_function_calling) return;
-
-	file_t f = data->f;
-	byte* taint_regs = data->taint_regs;
-	memory_list& taint_memory = data->taint_memory;
-	memory_list& stack_memory = data->taint_memory_stack;
-	
-    dr_mcontext_t mc = {sizeof(mc),DR_MC_ALL};
-    dr_get_mcontext(drcontext, &mc);
-
-	instr_t instr;
-	instr_init(drcontext, &instr);
-	instr_reuse(drcontext, &instr);
-	decode(drcontext, pc, &instr);
-	
-	print_instr(drcontext, f, &instr, pc);
-
-	int opcode = instr_get_opcode(&instr);
-	int n1 = instr_num_srcs(&instr);
-	int n2 = instr_num_dsts(&instr);
-	bool src_tainted = false;
-	reg_t taint_reg = 0, tainting_reg = 0;
-	app_pc taint_addr = 0, tainting_addr = 0;
-
-	print_propagation(f, n1, n2, &instr, &mc);
-
-	if(opc_is_pop(opcode)){
-		if(n2 > 0){
-			opnd_t dst_opnd = instr_get_dst(&instr, 0);
-			if(!opnd_is_reg(dst_opnd)) return;
-			
-			reg_id_t reg = opnd_get_reg(dst_opnd);
-			
-			app_pc value;
-			size_t size;
-			dr_safe_read((void *)mc.esp, 4, &value, &size);
-		
-			if(data->taint_memory.find(value) == false)
-			{
-				taint_regs[reg] = 0;
-				clear_tag_eacbdx(reg, taint_regs);
-			}
-		}
-		if(opcode == OP_leave) goto shrink;//mov %esp,%ebp+pop ebp == leave
-		return;
-	} else if(opcode == OP_xor){ /* xor eax, eax */
-		if(n1 != 2)	return;
-
-		opnd_t opnd1 = instr_get_src(&instr, 0);
-		opnd_t opnd2 = instr_get_src(&instr, 1);
-		if(!opnd_is_reg(opnd1) || !opnd_is_reg(opnd2))
-			return;
-		reg_id_t reg1 = opnd_get_reg(opnd1);
-		reg_id_t reg2 = opnd_get_reg(opnd2);
-		if(reg1 != reg2) return;
-		
-		taint_regs[reg1] = 0;
-		clear_tag_eacbdx(reg1, taint_regs);
-	} else if(opcode == OP_sub && n1 == 2 && n2 == 1){ // sub $0x00000010 %esp -> %esp
-		opnd_t opnd, opnd2;
-		if(opnd_is_reg(opnd=instr_get_src(&instr,1)) && opnd_get_reg(opnd)==DR_REG_ESP &&
-			opnd_is_immed_int(opnd2=instr_get_src(&instr,0)))
-			data->stack_end = (app_pc)mc.esp - opnd_get_immed_int(opnd2);
-			//dr_fprintf(f, "[Stack] expand from "PFX" to "PFX"\n", (app_pc)mc.esp, data->stack_end);
-	} else if(opc_is_move(opcode) && n1==1 && n2==1){//mov %esp,%ebp
-		opnd_t src_opnd, dst_opnd;
-		if(opnd_is_reg(src_opnd=instr_get_src(&instr,0)) && opnd_get_reg(src_opnd)==DR_REG_EBP && 
-			opnd_is_reg(dst_opnd=instr_get_dst(&instr,0)) && opnd_get_reg(dst_opnd)==DR_REG_ESP){
-shrink:
-			data->stack_end = (app_pc)mc.ebp;
-			//dr_fprintf(f, "[Stack] shrink from "PFX" to "PFX"\n", (app_pc)mc.esp, data->stack_end);
-			if(process_stack_shrink(taint_memory, stack_memory, (app_pc)mc.esp, (app_pc)mc.ebp))
-				dr_fprintf(f, "[-Taint-] remove memory "PFX"-"PFX"[%d]\n", (app_pc)mc.esp, (app_pc)mc.ebp, stack_memory.size());
-			return;
-		}
-	}
-
-	//以下是污点传播
-	if(n1 && n2)
-	{
-		int type = -1;
-		opnd_t src_opnd;
-		
-		for(int i = 0; i < n1; i++)
-		{
-			src_opnd = instr_get_src(&instr, i);
-			if(opnd_is_reg(src_opnd) && 
-				taint_regs[taint_reg = opnd_get_reg(src_opnd)] == 1)
-			{
-				src_tainted = true;
-				type = 0;
-				break;
-			}
-			else if(opnd_is_memory_reference(src_opnd) && 
-				taint_memory.find(taint_addr = opnd_compute_address(src_opnd, &mc)))
-			{
-				src_tainted = true;
-				type = 1;
-				break;
-			}
-			else if(opnd_is_pc(src_opnd) && 
-				taint_memory.find(taint_addr = opnd_get_pc(src_opnd)))
-			{
-				src_tainted = true;
-				type = 2;
-				break;
-			}
-		}
-
-		opnd_t dst_opnd = instr_get_dst(&instr, 0);
-
-		if(src_tainted)//污染标记
-		{
-			if(verbose & SHOW_TAINTING)	
-			{
-				//instr_disassemble(drcontext, &instr, f);
-				dr_fprintf(f, "\t$$$$ taint ");
-				if(type == 0)
-					opnd_disassemble(drcontext, src_opnd, f);
-				else if(type == 1)
-					dr_fprintf(f, "$mem:0x%08x ", taint_addr);
-				else if(type == 2)
-					dr_fprintf(f, "mem:0x%08x ", taint_addr);
-			}
-
-			if(opnd_is_reg(dst_opnd))
-				taint_regs[tainting_reg = opnd_get_reg(dst_opnd)] = 1;
-
-			else if(opnd_is_memory_reference(dst_opnd))
-				taint_memory.insert_sort(tainting_addr = opnd_compute_address(dst_opnd, &mc));
-		
-			else if(opnd_is_pc(dst_opnd))
-				taint_memory.insert_sort(tainting_addr = opnd_get_pc(dst_opnd));
-
-			if(verbose & SHOW_TAINTING)	
-			{
-				if(tainting_addr == 0)
-				{
-					dr_fprintf(f, "---> ");
-					opnd_disassemble(drcontext, dst_opnd, f);
-				}
-				else
-					dr_fprintf(f, "---> mem:0x%08x ", tainting_addr);
-
-				dr_fprintf(f, " $$$$\n");
-			}
-		} 
-		else//清除标记
-		{
-			if(opnd_is_reg(dst_opnd))
-			{
-				taint_regs[tainting_reg = opnd_get_reg(dst_opnd)] = 0;
-				clear_tag_eacbdx(tainting_reg, taint_regs);
-			}
-			else if(opnd_is_memory_reference(dst_opnd))
-			{
-				app_pc addr = opnd_compute_address(dst_opnd, &mc);
-				taint_memory.remove(addr, addr+1);
-				stack_memory.remove(addr, addr+1);
-			}
-
-		}
-	}
-
-	instr_free(drcontext, &instr);
-}
-
-static void 
 taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 {
 	thread_data* data = (thread_data*)dr_get_tls_field(drcontext);
@@ -1260,6 +1086,193 @@ taint_alert(instr_t* instr, app_pc target_addr, void* drcontext, dr_mcontext_t *
 
 	return is_taint;
 }
+#define CONSTRUCT_INSTR_BEGIN(pc, drcontext)	\
+	instr_t instr;								\
+	instr_init(drcontext, &instr);				\
+	instr_reuse(drcontext, &instr);				\
+	decode(drcontext, pc, &instr);				
+
+#define CONSTRUCT_INSTR_END(drcontext)			\
+	instr_free(drcontext, &instr);				
+
+#define SRC_OPND_IS_REG(instr, i, opnd, reg) opnd_is_reg(opnd = instr_get_src(instr, i)) && (reg = opnd_get_reg(opnd))
+#define DST_OPND_IS_REG(instr, i, opnd, reg) opnd_is_reg(opnd = instr_get_dst(instr, i)) && (reg = opnd_get_reg(opnd))
+
+static void 
+taint_propagation(app_pc pc)
+{
+	void* drcontext = dr_get_current_drcontext();
+	thread_data* data = (thread_data*)dr_get_tls_field(drcontext);
+	int& untrusted_function_calling = data->untrusted_function_calling;
+	
+	if(untrusted_function_calling) return;
+
+	file_t f = data->f;
+	byte* taint_regs = data->taint_regs;
+	memory_list& taint_memory = data->taint_memory;
+	memory_list& stack_memory = data->taint_memory_stack;
+	
+    dr_mcontext_t mc = {sizeof(mc),DR_MC_ALL};
+    dr_get_mcontext(drcontext, &mc);
+
+	CONSTRUCT_INSTR_BEGIN(pc, drcontext);
+	
+	print_instr(drcontext, f, &instr, pc);
+
+	int opcode = instr_get_opcode(&instr);
+	int n1 = instr_num_srcs(&instr);
+	int n2 = instr_num_dsts(&instr);
+	bool src_tainted = false;
+	reg_t taint_reg = 0, tainting_reg = 0;
+	app_pc taint_addr = 0, tainting_addr = 0;
+
+	print_propagation(f, n1, n2, &instr, &mc);
+
+	if(opc_is_pop(opcode)){
+		if(opcode == OP_leave) goto shrink;//mov %esp,%ebp+pop ebp == leave
+		
+		if(n2 <= 0)	goto exit0;
+		
+		opnd_t dst_opnd = instr_get_dst(&instr, 0);
+		if(!opnd_is_reg(dst_opnd)) goto exit0;
+		
+		reg_id_t reg = opnd_get_reg(dst_opnd);
+		
+		app_pc value;
+		size_t size;
+		dr_safe_read((void *)mc.esp, 4, &value, &size);
+	
+		if(taint_memory.find(value))
+			taint_regs[reg] = 1;
+		else
+		{
+			taint_regs[reg] = 0;
+			clear_tag_eacbdx(reg, taint_regs);
+		}
+		return;
+	} else if(opcode == OP_xor){ /* xor eax, eax */
+		if(n1 != 2)	goto exit0;
+
+		opnd_t opnd1 = instr_get_src(&instr, 0);
+		opnd_t opnd2 = instr_get_src(&instr, 1);
+		reg_id_t reg1, reg2;
+		if(opnd_is_reg(opnd1) && opnd_is_reg(opnd2) && 
+			(reg1=opnd_get_reg(opnd1)) == (reg2=opnd_get_reg(opnd2)))
+		{
+			clear_tag_eacbdx(reg1, taint_regs);
+			goto exit0;
+		}
+	} else if(opcode == OP_sub && n1 == 2 && n2 == 1){//sub $0x00000010 %esp -> %esp
+		opnd_t opnd, opnd2;
+		if(opnd_is_reg(opnd=instr_get_src(&instr,1)) && opnd_get_reg(opnd)==DR_REG_ESP &&
+			opnd_is_immed_int(opnd2=instr_get_src(&instr,0))){
+			data->stack_end = (app_pc)mc.esp - opnd_get_immed_int(opnd2);
+			//dr_fprintf(f, "[Stack] expand from "PFX" to "PFX"\n", (app_pc)mc.esp, data->stack_end);
+		}
+	} else if(opc_is_move(opcode) && n1==1 && n2==1){//mov %esp,%ebp
+		opnd_t src_opnd, dst_opnd;
+		if(opnd_is_reg(src_opnd=instr_get_src(&instr,0)) && opnd_get_reg(src_opnd)==DR_REG_EBP && 
+			opnd_is_reg(dst_opnd=instr_get_dst(&instr,0)) && opnd_get_reg(dst_opnd)==DR_REG_ESP){
+shrink:
+			data->stack_end = (app_pc)mc.ebp;
+			//dr_fprintf(f, "[Stack] shrink from "PFX" to "PFX"\n", (app_pc)mc.esp, data->stack_end);
+			if(process_stack_shrink(taint_memory, stack_memory, (app_pc)mc.esp, (app_pc)mc.ebp))
+				dr_fprintf(f, "[-Taint-] remove memory "PFX"-"PFX"[%d]\n", (app_pc)mc.esp, (app_pc)mc.ebp, stack_memory.size());
+			goto exit0;
+		}
+	}
+
+	//以下是污点传播
+propagation:
+	if(n1 && n2)
+	{
+		int type = -1;
+		opnd_t src_opnd;
+		
+		for(int i = 0; i < n1; i++)
+		{
+			src_opnd = instr_get_src(&instr, i);
+			if(opnd_is_reg(src_opnd) && 
+				taint_regs[taint_reg = opnd_get_reg(src_opnd)] == 1)
+			{
+				src_tainted = true;
+				type = 0;
+				break;
+			}
+			else if(opnd_is_memory_reference(src_opnd) && 
+				taint_memory.find(taint_addr = opnd_compute_address(src_opnd, &mc)))
+			{
+				src_tainted = true;
+				type = 1;
+				break;
+			}
+			else if(opnd_is_pc(src_opnd) && 
+				taint_memory.find(taint_addr = opnd_get_pc(src_opnd)))
+			{
+				src_tainted = true;
+				type = 2;
+				break;
+			}
+		}
+
+		opnd_t dst_opnd = instr_get_dst(&instr, 0);
+
+		if(src_tainted)//污染标记
+		{
+			if(verbose & SHOW_TAINTING)	
+			{
+				//instr_disassemble(drcontext, &instr, f);
+				dr_fprintf(f, "\t$$$$ taint ");
+				if(type == 0)
+					opnd_disassemble(drcontext, src_opnd, f);
+				else if(type == 1)
+					dr_fprintf(f, "$mem:0x%08x ", taint_addr);
+				else if(type == 2)
+					dr_fprintf(f, "mem:0x%08x ", taint_addr);
+			}
+
+			if(opnd_is_reg(dst_opnd))
+				taint_regs[tainting_reg = opnd_get_reg(dst_opnd)] = 1;
+
+			else if(opnd_is_memory_reference(dst_opnd))
+				taint_memory.insert_sort(tainting_addr = opnd_compute_address(dst_opnd, &mc));
+		
+			else if(opnd_is_pc(dst_opnd))
+				taint_memory.insert_sort(tainting_addr = opnd_get_pc(dst_opnd));
+
+			if(verbose & SHOW_TAINTING)	
+			{
+				if(tainting_addr == 0)
+				{
+					dr_fprintf(f, "---> ");
+					opnd_disassemble(drcontext, dst_opnd, f);
+				}
+				else
+					dr_fprintf(f, "---> mem:0x%08x ", tainting_addr);
+
+				dr_fprintf(f, " $$$$\n");
+			}
+		} 
+		else//清除标记
+		{
+			if(opnd_is_reg(dst_opnd))
+			{
+				taint_regs[tainting_reg = opnd_get_reg(dst_opnd)] = 0;
+				clear_tag_eacbdx(tainting_reg, taint_regs);
+			}
+			else if(opnd_is_memory_reference(dst_opnd))
+			{
+				app_pc addr = opnd_compute_address(dst_opnd, &mc);
+				taint_memory.remove(addr, addr+1);
+				stack_memory.remove(addr, addr+1);
+			}
+
+		}
+	}
+
+exit0:
+	CONSTRUCT_INSTR_END(drcontext);
+}
 
 static void
 at_call(app_pc instr_addr, app_pc target_addr)
@@ -1287,10 +1300,7 @@ at_call(app_pc instr_addr, app_pc target_addr)
     dr_mcontext_t mc = {sizeof(mc),DR_MC_ALL};
     dr_get_mcontext(drcontext, &mc);
 
-	instr_t instr;
-	instr_init(drcontext, &instr);
-	instr_reuse(drcontext, &instr);
-	decode(drcontext, instr_addr, &instr);
+	CONSTRUCT_INSTR_BEGIN(instr_addr, drcontext);
 
 	print_instr(drcontext, f, &instr, instr_addr);
 
@@ -1298,7 +1308,7 @@ at_call(app_pc instr_addr, app_pc target_addr)
 
 	taint_alert(&instr, target_addr, drcontext, &mc);
 	
-	instr_free(drcontext, &instr);
+	CONSTRUCT_INSTR_END(drcontext);
     
 	print_address(f, instr_addr, "[CALL @ ]");
 	print_address(f, target_addr, "\tInto");
@@ -1394,14 +1404,9 @@ at_return(app_pc instr_addr, app_pc target_addr)
 	dr_mcontext_t mc = {sizeof(mc),DR_MC_ALL};
 	dr_get_mcontext(drcontext, &mc);
 
-	instr_t instr;
-	instr_init(drcontext, &instr);
-	instr_reuse(drcontext, &instr);
-	decode(drcontext, instr_addr, &instr);
-
+	CONSTRUCT_INSTR_BEGIN(instr_addr, drcontext);
 	print_instr(drcontext, f, &instr, instr_addr);
-
-	instr_free(drcontext, &instr);
+	CONSTRUCT_INSTR_END(drcontext);
 		
 	//dr_fprintf(f, "[Stack] shrink2 from "PFX" to "PFX"\n", data->stack_end, (app_pc)mc.esp);
 	if(process_stack_shrink(data->taint_memory, stack_memory, data->stack_end, (app_pc)mc.esp))
@@ -1438,13 +1443,9 @@ at_jmp(app_pc instr_addr, app_pc target_addr)
 
 	file_t f = data->f;
 
-	instr_t instr;
-	instr_init(drcontext, &instr);
-	instr_reuse(drcontext, &instr);
-	decode(drcontext, instr_addr, &instr);
-
+	CONSTRUCT_INSTR_BEGIN(instr_addr, drcontext);
 	print_instr(drcontext, f, &instr, instr_addr);
-	instr_free(drcontext, &instr);
+	CONSTRUCT_INSTR_END(drcontext);
 
 	char func1[MAX_SYM_RESULT], func2[MAX_SYM_RESULT];
     print_address(f, instr_addr, "JMP @ ", func1, MAX_SYM_RESULT);
@@ -1472,13 +1473,9 @@ at_jmp_ind(app_pc instr_addr, app_pc target_addr)
 
 	file_t f = data->f;
 	
-	instr_t instr;
-	instr_init(drcontext, &instr);
-	instr_reuse(drcontext, &instr);
-	decode(drcontext, instr_addr, &instr);
-
+	CONSTRUCT_INSTR_BEGIN(instr_addr, drcontext);
 	print_instr(drcontext, f, &instr, instr_addr);
-	instr_free(drcontext, &instr);
+	CONSTRUCT_INSTR_END(drcontext);
 
 	print_address(f, instr_addr, "JMP Ind @ ");
     print_address(f, target_addr, "\tInto ");
@@ -1500,15 +1497,10 @@ at_others(app_pc pc)
 	if(untrusted_function_calling) return;
 
 	file_t f = data->f;
-	instr_t instr;
 
-	instr_init(drcontext, &instr);
-	instr_reuse(drcontext, &instr);
-	decode(drcontext, pc, &instr);
-
+	CONSTRUCT_INSTR_BEGIN(pc, drcontext);
 	print_instr(drcontext, f, &instr, pc);
-
-	instr_free(drcontext, &instr);
+	CONSTRUCT_INSTR_END(drcontext);
 }
 
 static dr_emit_flags_t

@@ -187,7 +187,7 @@ atomic_add32_return_sum(volatile int *x, int val)
 #endif
 
 const char* white_dll[] = {
-	"ntdll.dll", "KERNELBASE.dll", "user32.dll", "msvcrt.dll",
+	"ntdll.dll", "KERNELBASE.dll", "user32.dll",
 	"gdi32.dll", "shell32.dll",  "ole32.dll", "oleaut32.dll",
 	"comdlg32.dll","advapi32.dll", "imm32.dll", "rpcrt4.dll",
 	"secur32.dll", "usp10.dll", "shlwapi.dll", "comctl32.dll",
@@ -202,7 +202,7 @@ const char* white_dll[] = {
 };
 
 const char* black_dll[] = {
-	"msvc*.dll", "kernel32.dll", "ws2_32.dll", "wsock32.dll",
+	"ws2_32.dll", "wsock32.dll",
 };
 
 struct api_call_rule_t
@@ -375,6 +375,9 @@ public:
 	}
 
 	bool remove(app_pc start, app_pc end){
+		if(start > end)
+			return false;
+
 		iterator it1, it2;
 		if(within(start, &it1)==_ranges.end() && 
 			within(end, &it2)==_ranges.end() && 
@@ -973,6 +976,7 @@ taint_propagation(app_pc pc)
 				clear_tag_eacbdx(reg, taint_regs);
 			}
 		}
+		if(opcode == OP_leave) goto shrink;//mov %esp,%ebp+pop ebp == leave
 		return;
 	} else if(opcode == OP_xor){ /* xor eax, eax */
 		if(n1 != 2)	return;
@@ -991,14 +995,18 @@ taint_propagation(app_pc pc)
 		opnd_t opnd, opnd2;
 		if(opnd_is_reg(opnd=instr_get_src(&instr,1)) && opnd_get_reg(opnd)==DR_REG_ESP &&
 			opnd_is_immed_int(opnd2=instr_get_src(&instr,0)))
-				data->stack_end = (app_pc)mc.esp - opnd_get_immed_int(opnd2);
-	} else if(opc_is_move(opcode) && n1==1 && n2==1){//mov %ebp -> %esp
+			data->stack_end = (app_pc)mc.esp - opnd_get_immed_int(opnd2);
+			//dr_fprintf(f, "[Stack] expand from "PFX" to "PFX"\n", (app_pc)mc.esp, data->stack_end);
+	} else if(opc_is_move(opcode) && n1==1 && n2==1){//mov %esp,%ebp
 		opnd_t src_opnd, dst_opnd;
-		if(opnd_is_reg(src_opnd=instr_get_src(&instr,0)) && opnd_get_reg(src_opnd)==DR_REG_EBP &&
+		if(opnd_is_reg(src_opnd=instr_get_src(&instr,0)) && opnd_get_reg(src_opnd)==DR_REG_EBP && 
 			opnd_is_reg(dst_opnd=instr_get_dst(&instr,0)) && opnd_get_reg(dst_opnd)==DR_REG_ESP){
-				data->stack_end = (app_pc)mc.ebp;
-				if(process_stack_shrink(taint_memory, stack_memory, (app_pc)mc.esp, (app_pc)mc.ebp))
-					dr_fprintf(f, "[-Taint-] remove memory "PFX"-"PFX"\n", (app_pc)mc.esp, (app_pc)mc.ebp);
+shrink:
+			data->stack_end = (app_pc)mc.ebp;
+			//dr_fprintf(f, "[Stack] shrink from "PFX" to "PFX"\n", (app_pc)mc.esp, data->stack_end);
+			if(process_stack_shrink(taint_memory, stack_memory, (app_pc)mc.esp, (app_pc)mc.ebp))
+				dr_fprintf(f, "[-Taint-] remove memory "PFX"-"PFX"[%d]\n", (app_pc)mc.esp, (app_pc)mc.ebp, stack_memory.size());
+			return;
 		}
 	}
 
@@ -1040,6 +1048,7 @@ taint_propagation(app_pc pc)
 		{
 			if(verbose & SHOW_TAINTING)	
 			{
+				//instr_disassemble(drcontext, &instr, f);
 				dr_fprintf(f, "\t$$$$ taint ");
 				if(type == 0)
 					opnd_disassemble(drcontext, src_opnd, f);
@@ -1139,6 +1148,8 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 		read_size = value;
 	}
 
+	if(read_size <= 0)	goto exit;//没有数据
+
 	if(char_buffer)//普通的字符串，无需特别处理
 	{
 		taint_memory.insert_sort(range(read_buffer, read_buffer+read_size));
@@ -1148,7 +1159,7 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 		{
 			range r(read_buffer, read_buffer+read_size);
 			stack_memory.insert_sort(r);
-			dr_fprintf(f, "[+Taint+] add memory "PFX"-"PFX" [S]\n", r.start, r.end);
+			dr_fprintf(f, "[+Taint+] add memory "PFX"-"PFX" [%d]\n", r.start, r.end, stack_memory.size());
 		}
 	}
 	else
@@ -1179,13 +1190,14 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 				{
 					range r(addr, addr+value);
 					stack_memory.insert_sort(r);
-					dr_fprintf(f, "[+Taint+] memory "PFX"-"PFX" [S]\n", r.start, r.end);
+					dr_fprintf(f, "[+Taint+] memory "PFX"-"PFX" [%d]\n", r.start, r.end, stack_memory.size());
 				}
 			}
 
 		}
 	}
 
+exit:
 	untrusted_function_calling = 0;
 }
 
@@ -1206,6 +1218,11 @@ taint_alert(instr_t* instr, app_pc target_addr, void* drcontext, dr_mcontext_t *
 	for(int i = 0; i < num; i++)
 	{
 		opnd_t src_opnd = instr_get_src(instr, i);		
+
+		//call $0x02f9e3e2 %esp -> %esp 0xfffffffc(%esp)
+		if(opnd_is_immed_int(src_opnd))
+			break;
+
 		if(opnd_is_reg(src_opnd) && 
 			taint_regs[taint_reg = opnd_get_reg(src_opnd)])
 		{
@@ -1376,9 +1393,19 @@ at_return(app_pc instr_addr, app_pc target_addr)
 	memory_list& stack_memory = data->taint_memory_stack;
 	dr_mcontext_t mc = {sizeof(mc),DR_MC_ALL};
 	dr_get_mcontext(drcontext, &mc);
-			
+
+	instr_t instr;
+	instr_init(drcontext, &instr);
+	instr_reuse(drcontext, &instr);
+	decode(drcontext, instr_addr, &instr);
+
+	print_instr(drcontext, f, &instr, instr_addr);
+
+	instr_free(drcontext, &instr);
+		
+	//dr_fprintf(f, "[Stack] shrink2 from "PFX" to "PFX"\n", data->stack_end, (app_pc)mc.esp);
 	if(process_stack_shrink(data->taint_memory, stack_memory, data->stack_end, (app_pc)mc.esp))
-		dr_fprintf(f, "[-Taint-] remove memory "PFX"-"PFX"\n", data->stack_end, (app_pc)mc.esp);
+		dr_fprintf(f, "[--Taint--] remove memory "PFX"-"PFX"\n", data->stack_end, (app_pc)mc.esp);
 
 	char func1[MAX_SYM_RESULT], func2[MAX_SYM_RESULT];
     print_address(f, instr_addr, "[RETURN @ ]", func1, MAX_SYM_RESULT);
@@ -1525,8 +1552,6 @@ event_basic_block(void *drcontext, void *tag, instrlist_t *bb,
 		int opcode = instr_get_opcode(instr);
 		if(opcode == OP_INVALID)	continue;
 
-		if(++insert_count >= MAX_CLEAN_INSTR_COUNT) continue;
-
 		 /* instrument calls and returns  */
         if (instr_is_call_direct(instr)) {
 			dr_insert_call_instrumentation(drcontext, bb, instr, at_call);
@@ -1546,6 +1571,8 @@ event_basic_block(void *drcontext, void *tag, instrlist_t *bb,
 			//dr_insert_clean_call(drcontext, bb, instr, at_others, false, 1, 
 			//		OPND_CREATE_INTPTR(instr_get_app_pc(instr)));
 		}
+
+		if(++insert_count >= MAX_CLEAN_INSTR_COUNT) continue;
     }
 
     //dr_mutex_lock(stats_mutex);

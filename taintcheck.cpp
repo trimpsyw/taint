@@ -202,7 +202,7 @@ const char* white_dll[] = {
 };
 
 const char* black_dll[] = {
-	"ws2_32.dll", "wsock32.dll",
+	"msvc*.dll", "kernel32.dll", "ws2_32.dll", "wsock32.dll",
 };
 
 struct api_call_rule_t
@@ -926,6 +926,28 @@ clear_tag_eacbdx(reg_id_t reg, byte* taint_regs)
 	}
 }
 
+static void
+add_tag_eacbdx(reg_id_t reg, byte* taint_regs)
+{
+	if(reg == DR_REG_EAX){
+		taint_regs[DR_REG_AX] = 1;
+		taint_regs[DR_REG_AL] = 1;
+		taint_regs[DR_REG_AH] = 1;
+	} else if(reg == DR_REG_ECX){
+		taint_regs[DR_REG_CX] = 1;
+		taint_regs[DR_REG_CL] = 1;
+		taint_regs[DR_REG_CH] = 1;
+	} else if(reg == DR_REG_EBX){
+		taint_regs[DR_REG_BX] = 1;
+		taint_regs[DR_REG_BL] = 1;
+		taint_regs[DR_REG_BH] = 1;
+	} else if(reg == DR_REG_EDX){
+		taint_regs[DR_REG_DX] = 1;
+		taint_regs[DR_REG_DL] = 1;
+		taint_regs[DR_REG_DH] = 1;
+	}
+}
+
 static void 
 taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 {
@@ -985,7 +1007,7 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 		{
 			range r(read_buffer, read_buffer+read_size);
 			stack_memory.insert_sort(r);
-			dr_fprintf(f, "[+Taint+] add memory "PFX"-"PFX" [%d]\n", r.start, r.end, stack_memory.size());
+			dr_fprintf(f, "add_stack_memory "PFX"-"PFX" [%d]\n", r.start, r.end, stack_memory.size());
 		}
 	}
 	else
@@ -1016,7 +1038,7 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 				{
 					range r(addr, addr+value);
 					stack_memory.insert_sort(r);
-					dr_fprintf(f, "[+Taint+] memory "PFX"-"PFX" [%d]\n", r.start, r.end, stack_memory.size());
+					dr_fprintf(f, "add_stack_memory "PFX"-"PFX" [%d]\n", r.start, r.end, stack_memory.size());
 				}
 			}
 
@@ -1177,7 +1199,7 @@ shrink:
 			data->stack_end = (app_pc)mc.ebp;
 			//dr_fprintf(f, "[Stack] shrink from "PFX" to "PFX"\n", (app_pc)mc.esp, data->stack_end);
 			if(process_stack_shrink(taint_memory, stack_memory, (app_pc)mc.esp, (app_pc)mc.ebp))
-				dr_fprintf(f, "[-Taint-] remove memory "PFX"-"PFX"[%d]\n", (app_pc)mc.esp, (app_pc)mc.ebp, stack_memory.size());
+				dr_fprintf(f, "remove_stack_memory "PFX"-"PFX"[%d]\n", (app_pc)mc.esp, (app_pc)mc.ebp, stack_memory.size());
 			goto exit0;
 		}
 	}
@@ -1188,6 +1210,7 @@ propagation:
 	{
 		int type = -1;
 		opnd_t src_opnd;
+		int taint_size = 4;
 		
 		for(int i = 0; i < n1; i++)
 		{
@@ -1195,16 +1218,28 @@ propagation:
 			if(opnd_is_reg(src_opnd) && 
 				taint_regs[taint_reg = opnd_get_reg(src_opnd)] == 1)
 			{
+				if(taint_reg>=DR_REG_AL && taint_reg<=DR_REG_BH)
+					taint_size = 1;
+				else if(taint_reg>=DR_REG_AX && taint_reg<=DR_REG_DI)
+					taint_size = 2;
+				else if(taint_reg>=DR_REG_EAX && taint_reg<=DR_REG_EDI)
+					taint_size = 4;
+
 				src_tainted = true;
 				type = 0;
 				break;
 			}
-			else if(opnd_is_memory_reference(src_opnd) && 
-				taint_memory.find(taint_addr = opnd_compute_address(src_opnd, &mc)))
+			else if(opnd_is_memory_reference(src_opnd)) 
 			{
-				src_tainted = true;
-				type = 1;
-				break;
+				taint_addr = opnd_compute_address(src_opnd, &mc);
+				app_pc mem_addr;
+				dr_safe_read(taint_addr, 4, &mem_addr, NULL);
+				if(taint_memory.find(taint_addr) || taint_memory.find(mem_addr))
+				{
+					src_tainted = true;
+					type = 1;
+					break;
+				}
 			}
 			else if(opnd_is_pc(src_opnd) && 
 				taint_memory.find(taint_addr = opnd_get_pc(src_opnd)))
@@ -1232,13 +1267,35 @@ propagation:
 			}
 
 			if(opnd_is_reg(dst_opnd))
+			{
 				taint_regs[tainting_reg = opnd_get_reg(dst_opnd)] = 1;
+				add_tag_eacbdx(tainting_reg, taint_regs);
+			}
 
 			else if(opnd_is_memory_reference(dst_opnd))
-				taint_memory.insert_sort(tainting_addr = opnd_compute_address(dst_opnd, &mc));
+			{
+				tainting_addr = opnd_compute_address(dst_opnd, &mc);
+				range r(tainting_addr, tainting_addr+taint_size);
+				taint_memory.insert_sort(r);
+				if(within_global_stack(tainting_addr, data->stack_base, (app_pc)mc.esp))
+				{
+					data->taint_memory_stack.insert_sort(r);
+					dr_fprintf(f, "add_stack_memory "PFX"-"PFX" [%d]\n", r.start, r.end, stack_memory.size());
+				}
+			}
+
 		
 			else if(opnd_is_pc(dst_opnd))
-				taint_memory.insert_sort(tainting_addr = opnd_get_pc(dst_opnd));
+			{
+				tainting_addr = opnd_get_pc(dst_opnd);
+				range r(tainting_addr, tainting_addr+taint_size);
+				taint_memory.insert_sort(r);
+				if(within_global_stack(tainting_addr, data->stack_base, (app_pc)mc.esp))
+				{
+					data->taint_memory_stack.insert_sort(r);
+					dr_fprintf(f, "add_stack_memory "PFX"-"PFX" [%d]\n", r.start, r.end, stack_memory.size());
+				}
+			}
 
 			if(verbose & SHOW_TAINTING)	
 			{
@@ -1410,7 +1467,7 @@ at_return(app_pc instr_addr, app_pc target_addr)
 		
 	//dr_fprintf(f, "[Stack] shrink2 from "PFX" to "PFX"\n", data->stack_end, (app_pc)mc.esp);
 	if(process_stack_shrink(data->taint_memory, stack_memory, data->stack_end, (app_pc)mc.esp))
-		dr_fprintf(f, "[--Taint--] remove memory "PFX"-"PFX"\n", data->stack_end, (app_pc)mc.esp);
+		dr_fprintf(f, "remove_stack_memory "PFX"-"PFX" [%d]\n", data->stack_end, (app_pc)mc.esp, stack_memory.size());
 
 	char func1[MAX_SYM_RESULT], func2[MAX_SYM_RESULT];
     print_address(f, instr_addr, "[RETURN @ ]", func1, MAX_SYM_RESULT);

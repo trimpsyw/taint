@@ -1621,7 +1621,7 @@ event_basic_block(void *drcontext, void *tag, instrlist_t *bb,
 			//		OPND_CREATE_INTPTR(instr_get_app_pc(instr)));
 		}
 
-		if(++insert_count >= MAX_CLEAN_INSTR_COUNT) continue;
+		if(++insert_count >= MAX_CLEAN_INSTR_COUNT) break;
     }
 
     //dr_mutex_lock(stats_mutex);

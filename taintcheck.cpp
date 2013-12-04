@@ -28,6 +28,7 @@ typedef enum{
 	SHOW_FUNC_TREE		= 0x04,
 	SHOW_PROPAGATION	= 0x08,
 	SHOW_TAINTING		= 0x10,
+	SHOW_SHADOW_MEMORY	= 0x20,
 }show_mask_t;
 
 #ifdef WINDOWS
@@ -315,7 +316,7 @@ private:
 			s1 = m->start;
 			s2 = m->end;
 
-			if(s1 <= pc && pc <= s2)
+			if(s1 <= pc && pc < s2)
 				return m;
 
 			if(s1 > pc)		num >>= 1;
@@ -338,7 +339,7 @@ private:
 			s1 = m->start;
 			s2 = m->end;
 
-			if(s1 <= pc && pc <= s2)
+			if(s1 <= pc && pc < s2)
 				return m;
 
 			if(s1 > pc)		num >>= 1;
@@ -350,11 +351,7 @@ private:
 	}
 
 public:
-	void insert(const range &r) {
-		this->_ranges.push_back(r);
-	}
-
-	void insert_sort(const range &r){
+	void insert(const range &r){
 		const_iterator which;
 		const_iterator it = within(r.start, &which);
 		
@@ -384,7 +381,7 @@ public:
 			it1 == it2)
 			return false;
 		
-		insert_sort(range(start, end));
+		insert(range(start, end));
 
 		iterator it = within(start);
 		if(it != _ranges.end()){
@@ -454,8 +451,8 @@ typedef struct thread_data_t
 	app_pc read_buffer;			/* 最终的缓冲区地址 */
 	int read_size;				/* 最终的缓冲区大小 */
 	int instr_count;			/* 指令块计数 */
-	app_pc stack_base;			/* 栈底部 */
-	app_pc stack_end;			/* 栈顶最小值 (stack_base > stack_end)*/
+	app_pc stack_bottom;		/* 栈底部 */
+	app_pc stack_top;			/* 栈顶最小值 (stack_bottom > stack_top)*/
 	byte taint_regs[DR_REG_INVALID];	/* 寄存器污染状态*/
 
 	int enter_function;
@@ -480,6 +477,16 @@ app_pc app_base;
 app_pc app_end;
 char app_path[MAXIMUM_PATH];
 show_mask_t verbose;
+
+#define ELOGF(mask, f, ...) do {   \
+    if (verbose & (mask)) \
+        dr_fprintf(f, __VA_ARGS__); \
+} while (0)
+
+# define DOLOG(mask, stmt)  do {	\
+    if (verbose & (mask))			\
+        stmt                        \
+} while (0)
 
 bool
 text_matches_pattern(const char *text, const char *pattern,
@@ -593,9 +600,9 @@ within_function(app_pc pc, dr_mcontext_t* mc)
 }
 
 static bool
-within_global_stack(app_pc pc, app_pc stack_base, app_pc stack_end)
+within_global_stack(app_pc pc, app_pc stack_bottom, app_pc stack_top)
 {
-	return (pc >= stack_end && pc <= stack_base);
+	return (pc >= stack_top && pc <= stack_bottom);
 }
 
 #define MAX_OPTION_LEN DR_MAX_OPTIONS_LENGTH
@@ -727,28 +734,26 @@ create_thread_logfile(void *drcontext)
 static void
 print_function_tables(file_t f, const char* msg, function_tables& funcs)
 {
-	if(verbose & SHOW_FUNC_TREE)
-	{
+	DOLOG(SHOW_FUNC_TREE, {
 		dr_fprintf(f, "%s ", msg);
 		for(function_tables::iterator it = funcs.begin();
 			it != funcs.end(); it++)
 			dr_fprintf(f, "%s:", it->c_str());
 		dr_fprintf(f, "\n");
-	}
+	});
 }
 
 static void
 print_instr(void* drcontext, file_t f, instr_t* instr, app_pc pc)
 {
-	if(verbose & SHOW_INSTR)
-	{
+	DOLOG(SHOW_INSTR,{
 		int n1 = instr_num_srcs(instr);
 		int n2 = instr_num_dsts(instr);
 
 		dr_fprintf(f, PFX" ",  pc);
 		instr_disassemble(drcontext, instr, f);
 		dr_fprintf(f, "\t[%d, %d]\n",  n1, n2);
-	}
+	});
 }
 
 # define MAX_SYM_RESULT 256
@@ -785,12 +790,12 @@ print_address(file_t f, app_pc addr, const char *prefix, char* function = NULL, 
         modname = "<noname>";
     
 	if (symres == DRSYM_SUCCESS || symres == DRSYM_ERROR_LINE_NOT_AVAILABLE) {
-		if(verbose & SHOW_SYM)
-			dr_fprintf(f, "%s "PFX" %s:%s\n", prefix, addr, modname, sym.name);
+		DOLOG(SHOW_SYM,
+			dr_fprintf(f, "%s "PFX" %s:%s\n", prefix, addr, modname, sym.name););
 	} else {
 		sprintf(function, "%x", addr);
-		if(verbose & SHOW_SYM)
-			dr_fprintf(f, "%s "PFX" %s:%s\n", prefix, addr, modname, function);
+		DOLOG(SHOW_SYM,
+			dr_fprintf(f, "%s "PFX" %s:%s\n", prefix, addr, modname, function););
 	}
 
     dr_free_module_data(data);
@@ -841,64 +846,70 @@ static int lookup_syms(app_pc addr, char* module, char *function, int size)
 static void
 print_propagation(file_t f, int n1, int n2, instr_t* instr, dr_mcontext_t *mc)
 {
-	if((verbose & SHOW_PROPAGATION) == 0)
-		return;
+	DOLOG(SHOW_PROPAGATION, {
+		if(n1 > 0) dr_fprintf(f, "src_opnd(");
+		for(int i = 0; i < n1; i++)
+		{
+			if(i > 0) dr_fprintf(f, ", ");
+			opnd_t src_opnd = instr_get_src(instr, i);
+			if(opnd_is_reg(src_opnd))
+				dr_fprintf(f, "reg:%d",  opnd_get_reg(src_opnd));
+			else if(opnd_is_memory_reference(src_opnd))
+				dr_fprintf(f, "mem:0x%08x", opnd_compute_address(src_opnd, mc));
+			else if(opnd_is_pc(src_opnd))
+				dr_fprintf(f, "pc:0x%08x", opnd_get_pc(src_opnd));//模块内部调用
+			else if(opnd_is_abs_addr(src_opnd))
+				dr_fprintf(f, "abs:0x%08x", opnd_get_addr(src_opnd));
+			else if(opnd_is_immed_int(src_opnd))
+				dr_fprintf(f, "imm:%d", opnd_get_immed_int(src_opnd));
+			/*else if(opnd_is_base_disp(src_opnd))
+				dr_fprintf(f, "%d:base+disp %d ", i);
+			else if(opnd_is_instr(src_opnd))
+				dr_fprintf(f, "%d:instr %d ", i);*/
+		}
+		if(n1 > 0) dr_fprintf(f, ") ");
 
-	//以下是打印源和目标数
-	if(n1 > 0) dr_fprintf(f, "src_opnd(");
-	for(int i = 0; i < n1; i++)
-	{
-		if(i > 0) dr_fprintf(f, ", ");
-		opnd_t src_opnd = instr_get_src(instr, i);
-		if(opnd_is_reg(src_opnd))
-			dr_fprintf(f, "reg:%d",  opnd_get_reg(src_opnd));
-		else if(opnd_is_memory_reference(src_opnd))
-			dr_fprintf(f, "mem:0x%08x", opnd_compute_address(src_opnd, mc));
-		else if(opnd_is_pc(src_opnd))
-			dr_fprintf(f, "pc:0x%08x", opnd_get_pc(src_opnd));//模块内部调用
-		else if(opnd_is_abs_addr(src_opnd))
-			dr_fprintf(f, "abs:0x%08x", opnd_get_addr(src_opnd));
-		else if(opnd_is_immed_int(src_opnd))
-			dr_fprintf(f, "imm:%d", opnd_get_immed_int(src_opnd));
-		/*else if(opnd_is_base_disp(src_opnd))
-			dr_fprintf(f, "%d:base+disp %d ", i);
-		else if(opnd_is_instr(src_opnd))
-			dr_fprintf(f, "%d:instr %d ", i);*/
-	}
-	if(n1 > 0) dr_fprintf(f, ") ");
+		if(n2 > 0) dr_fprintf(f, "dst_opnd(");
+		for(int i = 0; i < n2; i++)
+		{
+			if(i > 0) dr_fprintf(f, ", ");
+			opnd_t dst_opnd = instr_get_dst(instr, i);
+			if(opnd_is_reg(dst_opnd))
+				dr_fprintf(f, "reg:%d",  opnd_get_reg(dst_opnd));
+			else if(opnd_is_memory_reference(dst_opnd))
+				dr_fprintf(f, "mem:0x%08x", opnd_compute_address(dst_opnd, mc));
+			else if(opnd_is_pc(dst_opnd))
+				dr_fprintf(f, "pc:0x%08x", opnd_get_pc(dst_opnd));
+			else if(opnd_is_abs_addr(dst_opnd))
+				dr_fprintf(f, "abs:0x%08x", opnd_get_addr(dst_opnd));
+			else if(opnd_is_immed_int(dst_opnd))
+				dr_fprintf(f, "imm:%d", opnd_get_immed_int(dst_opnd));
+			/*else if(opnd_is_base_disp(dst_opnd))
+				dr_fprintf(f, "%d:base+disp %d ", i);
+			else if(opnd_is_instr(dst_opnd))
+				dr_fprintf(f, "%d:instr %d ", i);*/
+		}
+		if(n2 > 0) dr_fprintf(f, ")");
 
-	if(n2 > 0) dr_fprintf(f, "dst_opnd(");
-	for(int i = 0; i < n2; i++)
-	{
-		if(i > 0) dr_fprintf(f, ", ");
-		opnd_t dst_opnd = instr_get_dst(instr, i);
-		if(opnd_is_reg(dst_opnd))
-			dr_fprintf(f, "reg:%d",  opnd_get_reg(dst_opnd));
-		else if(opnd_is_memory_reference(dst_opnd))
-			dr_fprintf(f, "mem:0x%08x", opnd_compute_address(dst_opnd, mc));
-		else if(opnd_is_pc(dst_opnd))
-			dr_fprintf(f, "pc:0x%08x", opnd_get_pc(dst_opnd));
-		else if(opnd_is_abs_addr(dst_opnd))
-			dr_fprintf(f, "abs:0x%08x", opnd_get_addr(dst_opnd));
-		else if(opnd_is_immed_int(dst_opnd))
-			dr_fprintf(f, "imm:%d", opnd_get_immed_int(dst_opnd));
-		/*else if(opnd_is_base_disp(dst_opnd))
-			dr_fprintf(f, "%d:base+disp %d ", i);
-		else if(opnd_is_instr(dst_opnd))
-			dr_fprintf(f, "%d:instr %d ", i);*/
-	}
-	if(n2 > 0) dr_fprintf(f, ")");
-
-	if(n1 || n2) dr_fprintf(f, "\n");
+		if(n1 || n2) dr_fprintf(f, "\n");
+	});
 }
+
+#define LOG_MEMORY_LIST(s, f, m)										\
+	if(verbose&SHOW_SHADOW_MEMORY){										\
+		dr_fprintf(f, "%s(%d):", s, m.size());							\
+		for(memory_list::iterator it = m.begin(); it != m.end(); it++)	\
+			dr_fprintf(f, "[0x%x, 0x%x) ", it->start, it->end);				\
+		dr_fprintf(f, "\n");											\
+	}
 
 static bool 
 process_stack_shrink(memory_list& taint_memory, memory_list& stack_memory,
-					 app_pc stack_end, app_pc current_esp)
+					 app_pc stack_top, app_pc current_esp)
 {
-	if(stack_memory.remove(stack_end, current_esp))
+	if(stack_memory.remove(stack_top, current_esp))
 	{
-		taint_memory.remove(stack_end, current_esp);
+		taint_memory.remove(stack_top, current_esp);
 		return true;
 	}
 	return false;
@@ -995,19 +1006,26 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 
 		read_size = value;
 	}
+	else
+	{
+		//对于向fgets之类的函数，直接strlen获取长度
+		read_size = strlen((char*)read_buffer) + 1;
+	}
 
 	if(read_size <= 0)	goto exit;//没有数据
 
 	if(char_buffer)//普通的字符串，无需特别处理
 	{
-		taint_memory.insert_sort(range(read_buffer, read_buffer+read_size));
+		range r(read_buffer, read_buffer+read_size);
+		taint_memory.insert(r);
 		dr_fprintf(f, "[Out] Read Size "PFX"\n", read_size);
+		LOG_MEMORY_LIST("[+] global_memory", f, taint_memory);
 
-		if(within_global_stack(read_buffer, data->stack_base, data->stack_end))
+		if(within_global_stack(read_buffer, data->stack_bottom, (app_pc)mc->esp))
 		{
-			range r(read_buffer, read_buffer+read_size);
-			stack_memory.insert_sort(r);
-			dr_fprintf(f, "add_stack_memory "PFX"-"PFX" [%d]\n", r.start, r.end, stack_memory.size());
+			stack_memory.insert(r);
+			ELOGF(SHOW_SHADOW_MEMORY, f, "[+] stack_seed [0x%x, 0x%x)\n", r.start, r.end);
+			LOG_MEMORY_LIST("[+] stack_memory", f, stack_memory);
 		}
 	}
 	else
@@ -1031,14 +1049,16 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 
 			if(in_size == 1 || (in_size == 2 && i > 0))
 			{
+				range r(addr, addr+value);
+				taint_memory.insert(r);
 				dr_fprintf(f, "[Out] Taint memory "PFX" %d\n", addr, value);
-				taint_memory.insert_sort(range(addr, addr+value));
+				LOG_MEMORY_LIST("[+] global_memory", f, taint_memory);
 
-				if(within_global_stack(read_buffer, data->stack_base, data->stack_end))
+				if(within_global_stack(addr, data->stack_bottom, (app_pc)mc->esp))
 				{
-					range r(addr, addr+value);
-					stack_memory.insert_sort(r);
-					dr_fprintf(f, "add_stack_memory "PFX"-"PFX" [%d]\n", r.start, r.end, stack_memory.size());
+					stack_memory.insert(r);
+					ELOGF(SHOW_SHADOW_MEMORY, f, "[+] stack_seed [0x%x, 0x%x)\n", r.start, r.end);
+					LOG_MEMORY_LIST("[+] stack_memory", f, stack_memory);
 				}
 			}
 
@@ -1102,7 +1122,6 @@ taint_alert(instr_t* instr, app_pc target_addr, void* drcontext, dr_mcontext_t *
 		else
 			dr_snprintf(msg, sizeof(msg), "Calling tainted reg %d $%08x\n", taint_reg, target_addr);
 
-		//DISPLAY_STRING(msg);
 		dr_fprintf(f, msg);
 	}
 
@@ -1119,6 +1138,20 @@ taint_alert(instr_t* instr, app_pc target_addr, void* drcontext, dr_mcontext_t *
 
 #define SRC_OPND_IS_REG(instr, i, opnd, reg) opnd_is_reg(opnd = instr_get_src(instr, i)) && (reg = opnd_get_reg(opnd))
 #define DST_OPND_IS_REG(instr, i, opnd, reg) opnd_is_reg(opnd = instr_get_dst(instr, i)) && (reg = opnd_get_reg(opnd))
+
+static int 
+get_reg_size(reg_id_t reg)
+{
+	if(reg>=DR_REG_START_64 && reg<=DR_REG_STOP_64)
+		return 8;
+	else if(reg>=DR_REG_START_32 && reg<=DR_REG_STOP_32)
+		return 4;
+	else if(reg>=DR_REG_START_16 && reg<=DR_REG_STOP_16)
+		return 2;
+	else if(reg>=DR_REG_START_8 && reg<=DR_REG_STOP_8)
+		return 1;
+	return 4;
+}
 
 static void 
 taint_propagation(app_pc pc)
@@ -1188,18 +1221,21 @@ taint_propagation(app_pc pc)
 		opnd_t opnd, opnd2;
 		if(opnd_is_reg(opnd=instr_get_src(&instr,1)) && opnd_get_reg(opnd)==DR_REG_ESP &&
 			opnd_is_immed_int(opnd2=instr_get_src(&instr,0))){
-			data->stack_end = (app_pc)mc.esp - opnd_get_immed_int(opnd2);
-			//dr_fprintf(f, "[Stack] expand from "PFX" to "PFX"\n", (app_pc)mc.esp, data->stack_end);
+			app_pc top = (app_pc)mc.esp - opnd_get_immed_int(opnd2);
+			if(top < data->stack_top)	data->stack_top = top;
 		}
 	} else if(opc_is_move(opcode) && n1==1 && n2==1){//mov %esp,%ebp
 		opnd_t src_opnd, dst_opnd;
 		if(opnd_is_reg(src_opnd=instr_get_src(&instr,0)) && opnd_get_reg(src_opnd)==DR_REG_EBP && 
 			opnd_is_reg(dst_opnd=instr_get_dst(&instr,0)) && opnd_get_reg(dst_opnd)==DR_REG_ESP){
 shrink:
-			data->stack_end = (app_pc)mc.ebp;
-			//dr_fprintf(f, "[Stack] shrink from "PFX" to "PFX"\n", (app_pc)mc.esp, data->stack_end);
-			if(process_stack_shrink(taint_memory, stack_memory, (app_pc)mc.esp, (app_pc)mc.ebp))
-				dr_fprintf(f, "remove_stack_memory "PFX"-"PFX"[%d]\n", (app_pc)mc.esp, (app_pc)mc.ebp, stack_memory.size());
+			if(process_stack_shrink(taint_memory, stack_memory, data->stack_top, (app_pc)mc.ebp+4))
+				ELOGF(SHOW_SHADOW_MEMORY, f, "[-] taint_propagation [0x%x, 0x%x)\n", (app_pc)mc.esp, (app_pc)mc.ebp);					
+			
+			app_pc top = (app_pc)mc.ebp+4;
+			if(top < data->stack_top)	data->stack_top = top;
+			LOG_MEMORY_LIST("[-] global_memory", f, taint_memory);
+			LOG_MEMORY_LIST("[-] stack_memory", f, stack_memory);
 			goto exit0;
 		}
 	}
@@ -1216,15 +1252,9 @@ propagation:
 		{
 			src_opnd = instr_get_src(&instr, i);
 			if(opnd_is_reg(src_opnd) && 
-				taint_regs[taint_reg = opnd_get_reg(src_opnd)] == 1)
+				(taint_size = get_reg_size(taint_reg=opnd_get_reg(src_opnd))) &&
+				taint_regs[taint_reg] == 1)
 			{
-				if(taint_reg>=DR_REG_AL && taint_reg<=DR_REG_BH)
-					taint_size = 1;
-				else if(taint_reg>=DR_REG_AX && taint_reg<=DR_REG_DI)
-					taint_size = 2;
-				else if(taint_reg>=DR_REG_EAX && taint_reg<=DR_REG_EDI)
-					taint_size = 4;
-
 				src_tainted = true;
 				type = 0;
 				break;
@@ -1254,8 +1284,7 @@ propagation:
 
 		if(src_tainted)//污染标记
 		{
-			if(verbose & SHOW_TAINTING)	
-			{
+			DOLOG(SHOW_TAINTING, {
 				//instr_disassemble(drcontext, &instr, f);
 				dr_fprintf(f, "\t$$$$ taint ");
 				if(type == 0)
@@ -1264,7 +1293,7 @@ propagation:
 					dr_fprintf(f, "$mem:0x%08x ", taint_addr);
 				else if(type == 2)
 					dr_fprintf(f, "mem:0x%08x ", taint_addr);
-			}
+			});
 
 			if(opnd_is_reg(dst_opnd))
 			{
@@ -1276,11 +1305,14 @@ propagation:
 			{
 				tainting_addr = opnd_compute_address(dst_opnd, &mc);
 				range r(tainting_addr, tainting_addr+taint_size);
-				taint_memory.insert_sort(r);
-				if(within_global_stack(tainting_addr, data->stack_base, (app_pc)mc.esp))
+				taint_memory.insert(r);
+				LOG_MEMORY_LIST("[+] global_memory", f, taint_memory);
+				
+				if(within_global_stack(tainting_addr, data->stack_bottom, (app_pc)mc.esp))
 				{
-					data->taint_memory_stack.insert_sort(r);
-					dr_fprintf(f, "add_stack_memory "PFX"-"PFX" [%d]\n", r.start, r.end, stack_memory.size());
+					stack_memory.insert(r);
+					ELOGF(SHOW_SHADOW_MEMORY, f, "[+] taint_propagation [0x%x, 0x%x)\n", r.start, r.end);					
+					LOG_MEMORY_LIST("[+] stack_memory", f, stack_memory);
 				}
 			}
 
@@ -1289,16 +1321,18 @@ propagation:
 			{
 				tainting_addr = opnd_get_pc(dst_opnd);
 				range r(tainting_addr, tainting_addr+taint_size);
-				taint_memory.insert_sort(r);
-				if(within_global_stack(tainting_addr, data->stack_base, (app_pc)mc.esp))
+				taint_memory.insert(r);
+				LOG_MEMORY_LIST("[+] global_memory", f, taint_memory);
+				
+				if(within_global_stack(tainting_addr, data->stack_bottom, (app_pc)mc.esp))
 				{
-					data->taint_memory_stack.insert_sort(r);
-					dr_fprintf(f, "add_stack_memory "PFX"-"PFX" [%d]\n", r.start, r.end, stack_memory.size());
+					stack_memory.insert(r);
+					ELOGF(SHOW_SHADOW_MEMORY, f, "[+] taint_propagation [0x%x, 0x%x)\n", r.start, r.end);					
+					LOG_MEMORY_LIST("[+] stack_memory", f, stack_memory);
 				}
 			}
 
-			if(verbose & SHOW_TAINTING)	
-			{
+			DOLOG(SHOW_TAINTING, {	
 				if(tainting_addr == 0)
 				{
 					dr_fprintf(f, "---> ");
@@ -1308,7 +1342,7 @@ propagation:
 					dr_fprintf(f, "---> mem:0x%08x ", tainting_addr);
 
 				dr_fprintf(f, " $$$$\n");
-			}
+			});
 		} 
 		else//清除标记
 		{
@@ -1320,8 +1354,11 @@ propagation:
 			else if(opnd_is_memory_reference(dst_opnd))
 			{
 				app_pc addr = opnd_compute_address(dst_opnd, &mc);
-				taint_memory.remove(addr, addr+1);
-				stack_memory.remove(addr, addr+1);
+				taint_memory.remove(addr, addr+taint_size);
+				stack_memory.remove(addr, addr+taint_size);
+				ELOGF(SHOW_SHADOW_MEMORY, f, "[-] taint_propagation [0x%x, 0x%x)\n", addr, addr+taint_size);					
+				LOG_MEMORY_LIST("[-] global_memory", f, taint_memory);
+				LOG_MEMORY_LIST("[-] stack_memory", f, stack_memory);
 			}
 
 		}
@@ -1457,6 +1494,7 @@ at_return(app_pc instr_addr, app_pc target_addr)
 
 	file_t f = data->f;
 	function_tables& funcs = data->funcs;
+	memory_list& taint_memory = data->taint_memory;
 	memory_list& stack_memory = data->taint_memory_stack;
 	dr_mcontext_t mc = {sizeof(mc),DR_MC_ALL};
 	dr_get_mcontext(drcontext, &mc);
@@ -1465,9 +1503,13 @@ at_return(app_pc instr_addr, app_pc target_addr)
 	print_instr(drcontext, f, &instr, instr_addr);
 	CONSTRUCT_INSTR_END(drcontext);
 		
-	//dr_fprintf(f, "[Stack] shrink2 from "PFX" to "PFX"\n", data->stack_end, (app_pc)mc.esp);
-	if(process_stack_shrink(data->taint_memory, stack_memory, data->stack_end, (app_pc)mc.esp))
-		dr_fprintf(f, "remove_stack_memory "PFX"-"PFX" [%d]\n", data->stack_end, (app_pc)mc.esp, stack_memory.size());
+	if(process_stack_shrink(taint_memory, stack_memory, data->stack_top, (app_pc)mc.esp))
+	{
+		ELOGF(SHOW_SHADOW_MEMORY, f, "[-] at_return "PFX"-"PFX"\n", data->stack_top, (app_pc)mc.esp);
+
+		LOG_MEMORY_LIST("[-] global_memory", f, taint_memory);
+		LOG_MEMORY_LIST("[-] stack_memory", f, stack_memory);
+	}
 
 	char func1[MAX_SYM_RESULT], func2[MAX_SYM_RESULT];
     print_address(f, instr_addr, "[RETURN @ ]", func1, MAX_SYM_RESULT);
@@ -1575,10 +1617,10 @@ event_basic_block(void *drcontext, void *tag, instrlist_t *bb,
 	block_cnt ++;
 	int insert_count = 0;
 
-	if(data->stack_base == 0)
+	if(data->stack_bottom == 0)
 	{
-		data->stack_base = (app_pc)mc.ebp;
-		data->stack_end = (app_pc)mc.esp;
+		data->stack_bottom = (app_pc)mc.ebp;
+		data->stack_top = (app_pc)mc.esp;
 	}
 
 	//如果没有调用可疑函数，则可以直接跳过白名单
@@ -1652,7 +1694,7 @@ event_module_load(void *drcontext, const module_data_t *info, bool loaded)
 	if(text_matches_any_pattern(info->full_path, whitelist_lib, true))
 	{
 		dr_fprintf(global_log, "lib_whitelist module %s\n", info->names.module_name);
-		skip_list.insert_sort(range(info->start, info->end));
+		skip_list.insert(range(info->start, info->end));
 	}
 	else
 	{
@@ -1661,7 +1703,7 @@ event_module_load(void *drcontext, const module_data_t *info, bool loaded)
 			if(_stricmp(white_dll[i], name) == 0)
 			{
 				dr_fprintf(global_log, "whitelist module %s\n", name);
-				skip_list.insert_sort(range(info->start, info->end));
+				skip_list.insert(range(info->start, info->end));
 				break;
 			}
 		}
@@ -1682,13 +1724,13 @@ event_thread_init(void *drcontext)
 
 #ifdef WINDOWS
 	TEB* teb = get_TEB_from_tid(id);
-	data->stack_base = (app_pc)teb->StackBase;
-	data->stack_end = (app_pc)teb->StackLimit;
-	dr_fprintf(global_log, "stack is "PFX"-"PFX"\n", data->stack_base, data->stack_end);
-	dr_fprintf(f, "stack is "PFX"-"PFX"\n", data->stack_base, data->stack_end);
+	data->stack_bottom = (app_pc)teb->StackBase;
+	data->stack_top = (app_pc)teb->StackLimit;
+	dr_fprintf(global_log, "stack is "PFX"-"PFX"\n", data->stack_bottom, data->stack_top);
+	dr_fprintf(f, "stack is "PFX"-"PFX"\n", data->stack_bottom, data->stack_top);
 #else
-	data->stack_base = 0;
-	data->stack_end = 0;
+	data->stack_bottom = 0;
+	data->stack_top = 0;
 #endif
 
     /* store it in the slot provided in the drcontext */

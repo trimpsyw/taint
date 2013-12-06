@@ -202,7 +202,7 @@ const char* white_dll[] = {
 };
 
 const char* black_dll[] = {
-	"msvc*.dll", "kernel32.dll", "ntdll.dll",// "KERNELBASE.dll", "ws2_32.dll", "wsock32.dll",
+	"msvc*.dll", "kernel32.dll", "ntdll.dll", "KERNELBASE.dll",// "ws2_32.dll", "wsock32.dll",
 };
 
 struct api_call_rule_t

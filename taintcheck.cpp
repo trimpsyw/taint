@@ -434,6 +434,8 @@ public:
 
 typedef std::vector<std::string> function_tables;
 
+typedef unsigned int reg_status;
+
 typedef struct thread_data_t
 {
 	file_t f;					/* 日志文件fd */
@@ -452,7 +454,7 @@ typedef struct thread_data_t
 	int instr_count;			/* 指令块计数 */
 	app_pc stack_bottom;		/* 栈底部 */
 	app_pc stack_top;			/* 栈顶最小值 (stack_bottom > stack_top)*/
-	byte taint_regs[DR_REG_LAST_ENUM];	/* 寄存器污染状态*/
+	reg_status taint_regs[DR_REG_LAST_ENUM];	/* 寄存器污染状态*/
 
 	int enter_function;
 	int leave_function;
@@ -894,20 +896,20 @@ print_propagation(file_t f, int n1, int n2, instr_t* instr, dr_mcontext_t *mc)
 	});
 }
 
-#define LOG_REG_LIST(f, regs)\
-	if(verbose&SHOW_TAINTING){\
-		dr_fprintf(f, "\tregs:");				\
-		for(int i = DR_REG_EAX; i <= DR_REG_EDI; i++)\
-			dr_fprintf(f, "%d", regs[i]);			\
-		dr_fprintf(f, "\n");						\
+#define LOG_REG_LIST(f, regs, mc)							\
+	if(verbose&SHOW_TAINTING){								\
+		dr_fprintf(f, "\tregs:");							\
+		for(int i = DR_REG_EAX; i <= DR_REG_EDI; i++)		\
+			if(regs[i])	dr_fprintf(f, "("PFX")", (regs[i]==1)?reg_get_value(i, mc):regs[i]);	\
+			else dr_fprintf(f, "(nil)");					\
+		dr_fprintf(f, "\n");								\
 	}
-		
 
 #define LOG_MEMORY_LIST(s, f, m)										\
 	if(verbose&SHOW_SHADOW_MEMORY){										\
 		dr_fprintf(f, "%s(%d):", s, m.size());							\
 		for(memory_list::iterator it = m.begin(); it != m.end(); it++)	\
-			dr_fprintf(f, "[0x%x, 0x%x) ", it->start, it->end);				\
+			dr_fprintf(f, "[0x%x, 0x%x) %s ", it->start, it->end, (char*)it->start);				\
 		dr_fprintf(f, "\n");											\
 	}
 
@@ -924,20 +926,14 @@ process_stack_shrink(memory_list& taint_memory, memory_list& stack_memory,
 }
 
 static bool 
-is_tags_clean(byte* regs)
+is_tags_clean(reg_status* regs)
 {
-#if 0
-	for(int i = 0; i < DR_REG_LAST_ENUM; i++)
-		if(regs[i]) return false;
-	return true;
-#else
-	static byte clean_regs[DR_REG_LAST_ENUM] = {0};
-	return !memcmp(regs, clean_regs, DR_REG_LAST_ENUM);
-#endif
+	static reg_status clean_regs[DR_REG_LAST_ENUM] = {0};
+	return !memcmp(regs, clean_regs, sizeof(clean_regs));
 }
 
 static void
-clear_tag_eacbdx(reg_id_t reg, byte* taint_regs)
+clear_tag_eacbdx(reg_id_t reg, reg_status* taint_regs)
 {
 	if(reg == DR_REG_EAX){
 		taint_regs[DR_REG_AX] = 0;
@@ -959,7 +955,7 @@ clear_tag_eacbdx(reg_id_t reg, byte* taint_regs)
 }
 
 static void
-add_tag_eacbdx(reg_id_t reg, byte* taint_regs)
+add_tag_eacbdx(reg_id_t reg, reg_status* taint_regs)
 {
 	if(reg == DR_REG_EAX){
 		taint_regs[DR_REG_AX] = 1;
@@ -1095,7 +1091,7 @@ taint_alert(instr_t* instr, app_pc target_addr, void* drcontext, dr_mcontext_t *
 {
 	thread_data* data = (thread_data*)dr_get_tls_field(drcontext);
 	file_t f = data->f;
-	byte* taint_regs = data->taint_regs;
+	reg_status* taint_regs = data->taint_regs;
 	memory_list& taint_memory = data->taint_memory;
 
 	int num = instr_num_srcs(instr);
@@ -1184,7 +1180,7 @@ taint_propagation(app_pc pc)
 	if(untrusted_function_calling) return;
 
 	file_t f = data->f;
-	byte* taint_regs = data->taint_regs;
+	reg_status* taint_regs = data->taint_regs;
 	memory_list& taint_memory = data->taint_memory;
 	memory_list& stack_memory = data->taint_memory_stack;
 	
@@ -1201,7 +1197,17 @@ taint_propagation(app_pc pc)
 
 	print_propagation(f, n1, n2, &instr, &mc);
 
-	if(opc_is_pop(opcode)){
+	if(opcode == OP_sub && n1 == 2 && n2 == 1){//sub $0x00000010 %esp -> %esp
+		opnd_t opnd, opnd2;
+		if(opnd_is_reg(opnd=instr_get_src(&instr,1)) && opnd_get_reg(opnd)==DR_REG_ESP &&
+			opnd_is_immed_int(opnd2=instr_get_src(&instr,0))){
+			app_pc top = (app_pc)mc.esp - opnd_get_immed_int(opnd2);
+			if(top < data->stack_top)	data->stack_top = top;
+		}
+	} else if(taint_memory.size() == 0 && is_tags_clean(taint_regs)){
+		//没有污染源，直接跳过
+		goto exit0;
+	} else if(opc_is_pop(opcode)){
 		if(opcode == OP_leave) goto shrink;//mov %esp,%ebp+pop ebp == leave
 		
 		if(n2 <= 0)	goto exit0;
@@ -1216,7 +1222,7 @@ taint_propagation(app_pc pc)
 		dr_safe_read((void *)mc.esp, 4, &value, &size);
 	
 		if(taint_memory.find(value))
-			taint_regs[reg] = 1;
+			taint_regs[reg] = value == 0 ? 1 : (reg_status)value;
 		else
 		{
 			taint_regs[reg] = 0;
@@ -1232,17 +1238,11 @@ taint_propagation(app_pc pc)
 		if(opnd_is_reg(opnd1) && opnd_is_reg(opnd2) && 
 			(reg1=opnd_get_reg(opnd1)) == (reg2=opnd_get_reg(opnd2)))
 		{
+			taint_regs[reg1] = 0;
 			clear_tag_eacbdx(reg1, taint_regs);
 			goto exit0;
 		}
-	} else if(opcode == OP_sub && n1 == 2 && n2 == 1){//sub $0x00000010 %esp -> %esp
-		opnd_t opnd, opnd2;
-		if(opnd_is_reg(opnd=instr_get_src(&instr,1)) && opnd_get_reg(opnd)==DR_REG_ESP &&
-			opnd_is_immed_int(opnd2=instr_get_src(&instr,0))){
-			app_pc top = (app_pc)mc.esp - opnd_get_immed_int(opnd2);
-			if(top < data->stack_top)	data->stack_top = top;
-		}
-	} else if(opc_is_move(opcode) && n1==1 && n2==1){//mov %esp,%ebp
+	} else  if(opc_is_move(opcode) && n1==1 && n2==1){//mov %esp,%ebp
 		opnd_t src_opnd, dst_opnd;
 		if(opnd_is_reg(src_opnd=instr_get_src(&instr,0)) && opnd_get_reg(src_opnd)==DR_REG_EBP && 
 			opnd_is_reg(dst_opnd=instr_get_dst(&instr,0)) && opnd_get_reg(dst_opnd)==DR_REG_ESP){
@@ -1257,10 +1257,6 @@ shrink:
 			goto exit0;
 		}
 	}
-
-	//没有污染源，直接跳过
-	if(taint_memory.size() == 0 && stack_memory.size() == 0 && is_tags_clean(taint_regs))
-		goto exit0;
 
 propagation:
 	//以下是污点传播
@@ -1278,7 +1274,7 @@ propagation:
 			src_opnd = instr_get_src(&instr, i);
 			if(opnd_is_reg(src_opnd) && 
 				(taint_size = get_reg_size(taint_reg=opnd_get_reg(src_opnd))) &&
-				taint_regs[taint_reg] == 1)
+				taint_regs[taint_reg])
 			{
 				src_tainted = true;
 				type = 0;
@@ -1306,15 +1302,18 @@ propagation:
 			}
 		}
 
-		opnd_t dst_opnd = instr_get_dst(&instr, 0);
-
+		int nn = 0;
+dest:
+		opnd_t dst_opnd = instr_get_dst(&instr, nn);
 		if(src_tainted)//污染标记
 		{
 			DOLOG(SHOW_TAINTING, {
-				//instr_disassemble(drcontext, &instr, f);
 				dr_fprintf(f, "\t$$$$ taint ");
 				if(type == 0)
+				{
 					opnd_disassemble(drcontext, src_opnd, f);
+					dr_fprintf(f, "("PFX")", reg_get_value(taint_reg, &mc));
+				}
 				else if(type == 1)
 					dr_fprintf(f, "$mem:0x%08x ", taint_addr);
 				else if(type == 2)
@@ -1323,7 +1322,8 @@ propagation:
 
 			if(opnd_is_reg(dst_opnd))
 			{
-				taint_regs[tainting_reg = opnd_get_reg(dst_opnd)] = 1;
+				taint_regs[tainting_reg = opnd_get_reg(dst_opnd)] = 
+					(type == 0) ? 1 : (reg_status)taint_addr;
 				add_tag_eacbdx(tainting_reg, taint_regs);
 			}
 
@@ -1363,7 +1363,7 @@ propagation:
 				{
 					dr_fprintf(f, "---> ");
 					opnd_disassemble(drcontext, dst_opnd, f);
-					LOG_REG_LIST(f, taint_regs);
+					LOG_REG_LIST(f, taint_regs,  &mc);
 				}
 				else
 					dr_fprintf(f, "---> mem:0x%08x\n", tainting_addr);
@@ -1378,7 +1378,7 @@ propagation:
 				{
 					taint_regs[tainting_reg] = 0;
 					clear_tag_eacbdx(tainting_reg, taint_regs);
-					LOG_REG_LIST(f, taint_regs);
+					LOG_REG_LIST(f, taint_regs, &mc);
 				}
 			}
 			else if(opnd_is_memory_reference(dst_opnd))
@@ -1393,6 +1393,7 @@ propagation:
 					LOG_MEMORY_LIST("[-] stack_memory", f, stack_memory);
 			}
 		}
+		if(++nn < n2) goto dest;
 	}
 
 exit0:
@@ -1752,7 +1753,7 @@ event_thread_init(void *drcontext)
     file_t f = create_thread_logfile(drcontext);
 	thread_data* data = new thread_data();
 
-	memset(data, 0, data->taint_regs-(byte*)data);
+	memset(data, 0, (byte*)data->taint_regs-(byte*)data);
 	memset(data->taint_regs, 0, sizeof(data->taint_regs));
 	data->f = f;
 	data->thread_id = id;

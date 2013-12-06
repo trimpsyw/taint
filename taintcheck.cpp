@@ -188,8 +188,7 @@ atomic_add32_return_sum(volatile int *x, int val)
 #endif
 
 const char* white_dll[] = {
-	"ntdll.dll", "KERNELBASE.dll", "user32.dll",
-	"gdi32.dll", "shell32.dll",  "ole32.dll", "oleaut32.dll",
+	"user32.dll","gdi32.dll", "shell32.dll",  "ole32.dll", "oleaut32.dll",
 	"comdlg32.dll","advapi32.dll", "imm32.dll", "rpcrt4.dll",
 	"secur32.dll", "usp10.dll", "shlwapi.dll", "comctl32.dll",
 	"UxTheme.dll", "gdiplus.dll", "WINMM.dll", "LPK.dll",
@@ -203,7 +202,7 @@ const char* white_dll[] = {
 };
 
 const char* black_dll[] = {
-	"msvc*.dll", "kernel32.dll", "ws2_32.dll", "wsock32.dll",
+	"msvc*.dll", "kernel32.dll", "ntdll.dll",// "KERNELBASE.dll", "ws2_32.dll", "wsock32.dll",
 };
 
 struct api_call_rule_t
@@ -257,7 +256,7 @@ struct range {
 
 template<class T>
 inline bool is_between(const T &low, const T &value, const T &high) {
-	return (low<=value && value<=high);
+	return (low<=value && value<high);
 }
 
 template<class T>
@@ -895,6 +894,15 @@ print_propagation(file_t f, int n1, int n2, instr_t* instr, dr_mcontext_t *mc)
 	});
 }
 
+#define LOG_REG_LIST(f, regs)\
+	if(verbose&SHOW_TAINTING){\
+		dr_fprintf(f, "\tregs:");				\
+		for(int i = DR_REG_EAX; i <= DR_REG_EDI; i++)\
+			dr_fprintf(f, "%d", regs[i]);			\
+		dr_fprintf(f, "\n");						\
+	}
+		
+
 #define LOG_MEMORY_LIST(s, f, m)										\
 	if(verbose&SHOW_SHADOW_MEMORY){										\
 		dr_fprintf(f, "%s(%d):", s, m.size());							\
@@ -1264,7 +1272,8 @@ propagation:
 				taint_addr = opnd_compute_address(src_opnd, &mc);
 				app_pc mem_addr;
 				dr_safe_read(taint_addr, 4, &mem_addr, NULL);
-				if(taint_memory.find(taint_addr) || taint_memory.find(mem_addr))
+				if(taint_memory.find(taint_addr) || 
+					(opc_is_move(opcode) && opcode != OP_lea && taint_memory.find(taint_addr=mem_addr)))
 				{
 					src_tainted = true;
 					type = 1;
@@ -1337,30 +1346,35 @@ propagation:
 				{
 					dr_fprintf(f, "---> ");
 					opnd_disassemble(drcontext, dst_opnd, f);
+					LOG_REG_LIST(f, taint_regs);
 				}
 				else
-					dr_fprintf(f, "---> mem:0x%08x ", tainting_addr);
-
-				dr_fprintf(f, " $$$$\n");
+					dr_fprintf(f, "---> mem:0x%08x\n", tainting_addr);
 			});
 		} 
 		else//清除标记
 		{
 			if(opnd_is_reg(dst_opnd))
 			{
-				taint_regs[tainting_reg = opnd_get_reg(dst_opnd)] = 0;
-				clear_tag_eacbdx(tainting_reg, taint_regs);
+				tainting_reg = opnd_get_reg(dst_opnd);
+				if(taint_regs[tainting_reg])
+				{
+					taint_regs[tainting_reg] = 0;
+					clear_tag_eacbdx(tainting_reg, taint_regs);
+					LOG_REG_LIST(f, taint_regs);
+				}
 			}
 			else if(opnd_is_memory_reference(dst_opnd))
 			{
 				app_pc addr = opnd_compute_address(dst_opnd, &mc);
-				taint_memory.remove(addr, addr+taint_size);
-				stack_memory.remove(addr, addr+taint_size);
-				ELOGF(SHOW_SHADOW_MEMORY, f, "[-] taint_propagation [0x%x, 0x%x)\n", addr, addr+taint_size);					
-				LOG_MEMORY_LIST("[-] global_memory", f, taint_memory);
-				LOG_MEMORY_LIST("[-] stack_memory", f, stack_memory);
+				if(taint_memory.remove(addr, addr+taint_size))
+				{
+					ELOGF(SHOW_SHADOW_MEMORY, f, "[-] taint_propagation [0x%x, 0x%x)\n", addr, addr+taint_size);					
+					LOG_MEMORY_LIST("[-] global_memory", f, taint_memory);
+				}
+				if(stack_memory.remove(addr, addr+taint_size))
+					LOG_MEMORY_LIST("[-] stack_memory", f, stack_memory);
 			}
-
 		}
 	}
 
@@ -1612,7 +1626,6 @@ event_basic_block(void *drcontext, void *tag, instrlist_t *bb,
 	int& block_cnt = data->instr_count;
 	file_t f = data->f;
 	dr_mcontext_t mc = {sizeof(mc),DR_MC_ALL};
-	bool is_return = data->return_address == (app_pc)tag;
 	dr_get_mcontext(drcontext, &mc);
 	block_cnt ++;
 	int insert_count = 0;
@@ -1630,8 +1643,13 @@ event_basic_block(void *drcontext, void *tag, instrlist_t *bb,
 	//正在调用了可疑函数，可以从两个地方获取函数返回结果
 	//1 .在该函数return时候
 	//2. 在basic block开始处检测
-	if(data->untrusted_function_calling && is_return)
-		taint_seed((app_pc)tag, drcontext, &mc);
+	if(data->untrusted_function_calling)
+	{
+		if(data->return_address == (app_pc)tag)
+			taint_seed((app_pc)tag, drcontext, &mc);
+		else if(!instr_is_return(instrlist_last(bb)))
+			return DR_EMIT_DEFAULT;
+	}
 	
 	for (instr = instrlist_first(bb); instr != NULL; instr = instr_get_next(instr))
 		instr_count++;

@@ -452,7 +452,7 @@ typedef struct thread_data_t
 	int instr_count;			/* 指令块计数 */
 	app_pc stack_bottom;		/* 栈底部 */
 	app_pc stack_top;			/* 栈顶最小值 (stack_bottom > stack_top)*/
-	byte taint_regs[DR_REG_INVALID];	/* 寄存器污染状态*/
+	byte taint_regs[DR_REG_LAST_ENUM];	/* 寄存器污染状态*/
 
 	int enter_function;
 	int leave_function;
@@ -923,6 +923,19 @@ process_stack_shrink(memory_list& taint_memory, memory_list& stack_memory,
 	return false;
 }
 
+static bool 
+is_tags_clean(byte* regs)
+{
+#if 0
+	for(int i = 0; i < DR_REG_LAST_ENUM; i++)
+		if(regs[i]) return false;
+	return true;
+#else
+	static byte clean_regs[DR_REG_LAST_ENUM] = {0};
+	return !memcmp(regs, clean_regs, DR_REG_LAST_ENUM);
+#endif
+}
+
 static void
 clear_tag_eacbdx(reg_id_t reg, byte* taint_regs)
 {
@@ -1185,9 +1198,6 @@ taint_propagation(app_pc pc)
 	int opcode = instr_get_opcode(&instr);
 	int n1 = instr_num_srcs(&instr);
 	int n2 = instr_num_dsts(&instr);
-	bool src_tainted = false;
-	reg_t taint_reg = 0, tainting_reg = 0;
-	app_pc taint_addr = 0, tainting_addr = 0;
 
 	print_propagation(f, n1, n2, &instr, &mc);
 
@@ -1212,7 +1222,7 @@ taint_propagation(app_pc pc)
 			taint_regs[reg] = 0;
 			clear_tag_eacbdx(reg, taint_regs);
 		}
-		return;
+		goto exit0;
 	} else if(opcode == OP_xor){ /* xor eax, eax */
 		if(n1 != 2)	goto exit0;
 
@@ -1248,8 +1258,15 @@ shrink:
 		}
 	}
 
-	//以下是污点传播
+	//没有污染源，直接跳过
+	if(taint_memory.size() == 0 && stack_memory.size() == 0 && is_tags_clean(taint_regs))
+		goto exit0;
+
 propagation:
+	//以下是污点传播
+	bool src_tainted = false;
+	reg_t taint_reg = 0, tainting_reg = 0;
+	app_pc taint_addr = 0, tainting_addr = 0;
 	if(n1 && n2)
 	{
 		int type = -1;

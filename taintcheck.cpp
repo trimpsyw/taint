@@ -1679,17 +1679,14 @@ at_others(app_pc pc)
 	CONSTRUCT_INSTR_END(drcontext);
 }
 
+#ifndef USE_DRMGR
 static dr_emit_flags_t
 event_basic_block(void *drcontext, void *tag, instrlist_t *bb,
                   bool for_trace, bool translating)
 {
     instr_t *instr;
 	int instr_count = 0;
-#ifndef USE_DRMGR
 	thread_data* data = (thread_data*)dr_get_tls_field(drcontext);
-#else
-	thread_data* data = (thread_data*)drmgr_get_tls_field(drcontext, tls_index);
-#endif
 	int& block_cnt = data->instr_count;
 	file_t f = data->f;
 	dr_mcontext_t mc = {sizeof(mc),DR_MC_ALL};
@@ -1756,6 +1753,124 @@ event_basic_block(void *drcontext, void *tag, instrlist_t *bb,
 
     return DR_EMIT_DEFAULT;
 }
+#else
+typedef struct shared_data_t
+{
+	int skip;
+	int insert_count;
+}shared_data;
+
+static dr_emit_flags_t
+event_bb_app2app(void *drcontext, void *tag, instrlist_t *bb,
+                 bool for_trace, bool translating, OUT void **user_data)
+{
+	shared_data* sd = (shared_data*)dr_thread_alloc(drcontext, sizeof(*sd));
+    memset(sd, 0, sizeof(*sd));
+    *user_data = (void *)sd;
+
+    return DR_EMIT_DEFAULT;
+}
+
+static dr_emit_flags_t
+event_bb_analysis(void *drcontext, void *tag, instrlist_t *bb,
+                  bool for_trace, bool translating, void *user_data)
+{
+	thread_data* data = (thread_data*)drmgr_get_tls_field(drcontext, tls_index);
+	shared_data *sd = (shared_data *) user_data;
+	instr_t *instr;
+	int instr_count = 0;
+	int& block_cnt = data->instr_count;
+	file_t f = data->f;
+	dr_mcontext_t mc = {sizeof(mc),DR_MC_ALL};
+	dr_get_mcontext(drcontext, &mc);
+	block_cnt ++;
+
+	if(data->stack_bottom == 0)
+	{
+		data->stack_bottom = (app_pc)mc.ebp;
+		data->stack_top = (app_pc)mc.esp;
+	}
+
+	//如果没有调用可疑函数，则可以直接跳过白名单
+	if(data->untrusted_function_calling == 0 && within_whitelist((app_pc)tag))
+	{
+		sd->skip = 1;
+		return DR_EMIT_DEFAULT;
+	}
+
+	//正在调用了可疑函数，可以从两个地方获取函数返回结果
+	//1 .在该函数return时候
+	//2. 在basic block开始处检测
+	if(data->untrusted_function_calling)
+	{
+		if(data->return_address == (app_pc)tag)
+			taint_seed((app_pc)tag, drcontext, &mc);
+		else if(!instr_is_return(instrlist_last(bb)))
+		{
+			sd->skip = 1;
+			return DR_EMIT_DEFAULT;
+		}
+	}
+
+	for (instr = instrlist_first(bb); instr != NULL; instr = instr_get_next(instr))
+		instr_count++;
+	
+	dr_fprintf(f, "\nin dr_basic_block #%d (tag="PFX") esp="PFX" instr_count=%d\n", 
+			block_cnt, tag, mc.esp, instr_count);
+
+	return DR_EMIT_DEFAULT;
+}
+
+/* event_bb_insert calls instrument_mem to instrument every
+ * application memory reference.
+ */
+static dr_emit_flags_t
+event_bb_insert(void *drcontext, void *tag, instrlist_t *bb,
+                instr_t *instr, bool for_trace, bool translating,
+                void *user_data)
+{
+	shared_data *sd = (shared_data *) user_data;
+	int& insert_count = sd->insert_count;
+	
+	if(sd->skip == 1 || insert_count >= MAX_CLEAN_INSTR_COUNT)
+		return DR_EMIT_DEFAULT;
+
+	int opcode = instr_get_opcode(instr);
+	if(opcode == OP_INVALID)	
+		return DR_EMIT_DEFAULT;
+	
+	if (instr_is_call_direct(instr)) {
+		dr_insert_call_instrumentation(drcontext, bb, instr, at_call);
+    } else if (instr_is_call_indirect(instr)) {
+        dr_insert_mbr_instrumentation(drcontext, bb, instr, at_call, SPILL_SLOT_1);
+    } else if (instr_is_return(instr)) {
+        dr_insert_mbr_instrumentation(drcontext, bb, instr, at_return, SPILL_SLOT_1);
+    } else if (instr_is_ubr(instr)) {
+        dr_insert_ubr_instrumentation(drcontext, bb, instr, (app_pc)at_jmp);	
+	} else if(opcode == OP_jmp_ind || opcode == OP_jmp_far_ind){
+		dr_insert_mbr_instrumentation(drcontext, bb, instr, at_jmp_ind, SPILL_SLOT_1);
+	} else if(opc_is_move(opcode) || opc_is_pop(opcode) || opcode_is_arith(opcode)){
+		dr_insert_clean_call(drcontext, bb, instr, taint_propagation, false, 1, 
+			OPND_CREATE_INTPTR(instr_get_app_pc(instr)));
+	} else {
+		insert_count --;
+		//dr_insert_clean_call(drcontext, bb, instr, at_others, false, 1, 
+		//		OPND_CREATE_INTPTR(instr_get_app_pc(instr)));
+	}
+	++insert_count;
+
+    return DR_EMIT_DEFAULT;	
+}
+
+static dr_emit_flags_t
+event_bb_instru2instru(void *drcontext, void *tag, instrlist_t *bb,
+                              bool for_trace, bool translating, void *user_data)
+{
+	shared_data *sd = (shared_data *) user_data;
+	dr_thread_free(drcontext, sd, sizeof(*sd));
+	return DR_EMIT_DEFAULT;
+}
+#endif
 
 static void 
 event_module_load(void *drcontext, const module_data_t *info, bool loaded)
@@ -1858,126 +1973,6 @@ event_exit(void)
 	dr_fprintf(f_global, "====== log end ======\n");
 	close_file(f_global);
 }
-
-#ifdef USE_DRMGR
-
-typedef struct shared_data_t
-{
-	int skip;
-	int insert_count;
-}shared_data;
-
-static dr_emit_flags_t
-event_bb_app2app(void *drcontext, void *tag, instrlist_t *bb,
-                 bool for_trace, bool translating, OUT void **user_data)
-{
-	shared_data* sd = (shared_data*)dr_thread_alloc(drcontext, sizeof(*sd));
-    memset(sd, 0, sizeof(*sd));
-    *user_data = (void *)sd;
-
-    return DR_EMIT_DEFAULT;
-}
-
-static dr_emit_flags_t
-event_bb_analysis(void *drcontext, void *tag, instrlist_t *bb,
-                  bool for_trace, bool translating, void *user_data)
-{
-	thread_data* data = (thread_data*)drmgr_get_tls_field(drcontext, tls_index);
-	shared_data *sd = (shared_data *) user_data;
-	instr_t *instr;
-	int instr_count = 0;
-	int& block_cnt = data->instr_count;
-	file_t f = data->f;
-	dr_mcontext_t mc = {sizeof(mc),DR_MC_ALL};
-	dr_get_mcontext(drcontext, &mc);
-	block_cnt ++;
-
-	if(data->stack_bottom == 0)
-	{
-		data->stack_bottom = (app_pc)mc.ebp;
-		data->stack_top = (app_pc)mc.esp;
-	}
-
-	//如果没有调用可疑函数，则可以直接跳过白名单
-	if(data->untrusted_function_calling == 0 && within_whitelist((app_pc)tag))
-	{
-		sd->skip = 1;
-		return DR_EMIT_DEFAULT;
-	}
-
-	//正在调用了可疑函数，可以从两个地方获取函数返回结果
-	//1 .在该函数return时候
-	//2. 在basic block开始处检测
-	if(data->untrusted_function_calling)
-	{
-		if(data->return_address == (app_pc)tag)
-			taint_seed((app_pc)tag, drcontext, &mc);
-		else if(!instr_is_return(instrlist_last(bb)))
-		{
-			sd->skip = 1;
-			return DR_EMIT_DEFAULT;
-		}
-	}
-
-	for (instr = instrlist_first(bb); instr != NULL; instr = instr_get_next(instr))
-		instr_count++;
-	
-	dr_fprintf(f, "\nin dr_basic_block (tag="PFX") esp="PFX" instr_count=%d\n", 
-			tag, mc.esp, instr_count);
-
-	return DR_EMIT_DEFAULT;
-}
-
-/* event_bb_insert calls instrument_mem to instrument every
- * application memory reference.
- */
-static dr_emit_flags_t
-event_bb_insert(void *drcontext, void *tag, instrlist_t *bb,
-                instr_t *instr, bool for_trace, bool translating,
-                void *user_data)
-{
-	shared_data *sd = (shared_data *) user_data;
-	int& insert_count = sd->insert_count;
-	
-	if(sd->skip == 1 || insert_count >= MAX_CLEAN_INSTR_COUNT)
-		return DR_EMIT_DEFAULT;
-
-	int opcode = instr_get_opcode(instr);
-	if(opcode == OP_INVALID)	
-		return DR_EMIT_DEFAULT;
-	
-	if (instr_is_call_direct(instr)) {
-		dr_insert_call_instrumentation(drcontext, bb, instr, at_call);
-    } else if (instr_is_call_indirect(instr)) {
-        dr_insert_mbr_instrumentation(drcontext, bb, instr, at_call, SPILL_SLOT_1);
-    } else if (instr_is_return(instr)) {
-        dr_insert_mbr_instrumentation(drcontext, bb, instr, at_return, SPILL_SLOT_1);
-    } else if (instr_is_ubr(instr)) {
-        dr_insert_ubr_instrumentation(drcontext, bb, instr, (app_pc)at_jmp);	
-	} else if(opcode == OP_jmp_ind || opcode == OP_jmp_far_ind){
-		dr_insert_mbr_instrumentation(drcontext, bb, instr, at_jmp_ind, SPILL_SLOT_1);
-	} else if(opc_is_move(opcode) || opc_is_pop(opcode) || opcode_is_arith(opcode)){
-		dr_insert_clean_call(drcontext, bb, instr, taint_propagation, false, 1, 
-			OPND_CREATE_INTPTR(instr_get_app_pc(instr)));
-	} else {
-		insert_count --;
-		//dr_insert_clean_call(drcontext, bb, instr, at_others, false, 1, 
-		//		OPND_CREATE_INTPTR(instr_get_app_pc(instr)));
-	}
-	++insert_count;
-
-    return DR_EMIT_DEFAULT;	
-}
-
-static dr_emit_flags_t
-event_bb_instru2instru(void *drcontext, void *tag, instrlist_t *bb,
-                              bool for_trace, bool translating, void *user_data)
-{
-	shared_data *sd = (shared_data *) user_data;
-	dr_thread_free(drcontext, sd, sizeof(*sd));
-	return DR_EMIT_DEFAULT;
-}
-#endif
 
 DR_EXPORT void 
 dr_init(client_id_t id)

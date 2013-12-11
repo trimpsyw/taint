@@ -518,9 +518,9 @@ atomic_add32_return_sum(volatile int *x, int val)
     return (cur + val);
 }
 #else
-# define ATOMIC_INC32(x) _InterlockedIncrement((volatile LONG *)&(x))
-# define ATOMIC_DEC32(x) _InterlockedDecrement((volatile LONG *)&(x))
-# define ATOMIC_ADD32(x, val) _InterlockedExchangeAdd((volatile LONG *)&(x), val)
+# define ATOMIC_INC32(x) InterlockedIncrement((volatile LONG *)&(x))
+# define ATOMIC_DEC32(x) InterlockedDecrement((volatile LONG *)&(x))
+# define ATOMIC_ADD32(x, val) InterlockedExchangeAdd((volatile LONG *)&(x), val)
 
 static inline int
 atomic_add32_return_sum(volatile int *x, int val)

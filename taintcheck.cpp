@@ -7,9 +7,14 @@
  * taintcheck.cpp
  */
 
+#define USE_DRMGR
+
 #include "dr_api.h"
 #include "drsyms.h"
-
+#ifdef USE_DRMGR
+#include "drmgr.h"
+#include "drwrap.h"
+#endif
 #include <vector>
 #include <algorithm>
 #include <string>
@@ -17,6 +22,7 @@
 #ifdef WINDOWS
 # include "windefs.h"
 #endif
+#include "replace.h"
 
 static const char * const build_date = __DATE__ " " __TIME__;
 
@@ -470,7 +476,9 @@ static memory_list skip_list;
 static void *stats_mutex; /* for multithread support */
 static uint num_threads;
 static client_id_t my_id;
-static file_t global_log;
+static int tls_index;
+
+file_t f_global;
 static const char* appnm;
 char logsubdir[MAXIMUM_PATH];
 char whitelist_lib[MAXIMUM_PATH];
@@ -563,6 +571,8 @@ opcode_is_arith(int opc)
             opc == OP_inc || opc == OP_dec ||
 			opc == OP_xor || opc == OP_or || opc == OP_and ||
 			opc == OP_mul || opc == OP_div ||
+			opc == OP_sbb || opc == OP_adc || 
+			opc == OP_neg || opc == OP_not ||
 			/* opc_is_gpr_shift_src0 count is in src #0 */
 			opc == OP_shl || opc == OP_shr || opc == OP_sar ||
             opc == OP_rol || opc == OP_ror || 
@@ -696,7 +706,7 @@ open_logfile(const char *name, bool pid_log, int which_thread)
 }
 
 static void
-create_global_logfile(const char* logdir)
+create_f_globalfile(const char* logdir)
 {
     uint count = 0;
     const char *appnm = dr_get_application_name();
@@ -713,9 +723,9 @@ create_global_logfile(const char* logdir)
         dr_abort();
     }
 
-    global_log = open_logfile("global", true/*pid suffix*/, -1);
+    f_global = open_logfile("global", true/*pid suffix*/, -1);
 
-	dr_fprintf(global_log, "Dr. TaintCheck built on %s\n", build_date);
+	dr_fprintf(f_global, "Dr. TaintCheck built on %s\n", build_date);
 }
 
 static file_t
@@ -723,7 +733,7 @@ create_thread_logfile(void *drcontext)
 {
     file_t f;
     uint which_thread = atomic_add32_return_sum((volatile int *)&num_threads, 1) - 1;
-    dr_fprintf(global_log, "new thread #%d id=%d\n",
+    dr_fprintf(f_global, "new thread #%d id=%d\n",
           which_thread, dr_get_thread_id(drcontext));
 
     f = open_logfile("thread", false, which_thread/*tid suffix*/);
@@ -979,7 +989,11 @@ add_tag_eacbdx(reg_id_t reg, reg_status* taint_regs)
 static void 
 taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 {
+#ifndef USE_DRMGR
 	thread_data* data = (thread_data*)dr_get_tls_field(drcontext);
+#else
+	thread_data* data = (thread_data*)drmgr_get_tls_field(drcontext, tls_index);
+#endif
 	int& untrusted_function_calling = data->untrusted_function_calling;
 	app_pc& return_address = data->return_address;
 	
@@ -1089,7 +1103,11 @@ exit:
 static int
 taint_alert(instr_t* instr, app_pc target_addr, void* drcontext, dr_mcontext_t *mc)
 {
+#ifndef USE_DRMGR
 	thread_data* data = (thread_data*)dr_get_tls_field(drcontext);
+#else
+	thread_data* data = (thread_data*)drmgr_get_tls_field(drcontext, tls_index);
+#endif
 	file_t f = data->f;
 	reg_status* taint_regs = data->taint_regs;
 	memory_list& taint_memory = data->taint_memory;
@@ -1174,7 +1192,11 @@ static void
 taint_propagation(app_pc pc)
 {
 	void* drcontext = dr_get_current_drcontext();
+#ifndef USE_DRMGR
 	thread_data* data = (thread_data*)dr_get_tls_field(drcontext);
+#else
+	thread_data* data = (thread_data*)drmgr_get_tls_field(drcontext, tls_index);
+#endif
 	int& untrusted_function_calling = data->untrusted_function_calling;
 	
 	if(untrusted_function_calling) return;
@@ -1329,16 +1351,19 @@ dest:
 
 			else if(opnd_is_memory_reference(dst_opnd))
 			{
-				tainting_addr = opnd_compute_address(dst_opnd, &mc);
-				range r(tainting_addr, tainting_addr+taint_size);
-				taint_memory.insert(r);
-				LOG_MEMORY_LIST("[+] global_memory", f, taint_memory);
-				
-				if(within_global_stack(tainting_addr, data->stack_bottom, (app_pc)mc.esp))
+				if(type == 0 && reg_get_value(taint_reg, &mc))
 				{
-					stack_memory.insert(r);
-					ELOGF(SHOW_SHADOW_MEMORY, f, "[+] taint_propagation [0x%x, 0x%x)\n", r.start, r.end);					
-					LOG_MEMORY_LIST("[+] stack_memory", f, stack_memory);
+					tainting_addr = opnd_compute_address(dst_opnd, &mc);
+					range r(tainting_addr, tainting_addr+taint_size);
+					taint_memory.insert(r);
+					LOG_MEMORY_LIST("[+] global_memory", f, taint_memory);
+					
+					if(within_global_stack(tainting_addr, data->stack_bottom, (app_pc)mc.esp))
+					{
+						stack_memory.insert(r);
+						ELOGF(SHOW_SHADOW_MEMORY, f, "[+] taint_propagation [0x%x, 0x%x)\n", r.start, r.end);					
+						LOG_MEMORY_LIST("[+] stack_memory", f, stack_memory);
+					}
 				}
 			}
 
@@ -1404,7 +1429,11 @@ static void
 at_call(app_pc instr_addr, app_pc target_addr)
 {
 	void* drcontext = dr_get_current_drcontext();
+#ifndef USE_DRMGR
 	thread_data* data = (thread_data*)dr_get_tls_field(drcontext);
+#else
+	thread_data* data = (thread_data*)drmgr_get_tls_field(drcontext, tls_index);
+#endif
 	int& untrusted_function_calling = data->untrusted_function_calling;
 
 	if(untrusted_function_calling) return;
@@ -1510,7 +1539,11 @@ static void
 at_return(app_pc instr_addr, app_pc target_addr)
 {
 	void* drcontext = dr_get_current_drcontext();
+#ifndef USE_DRMGR
 	thread_data* data = (thread_data*)dr_get_tls_field(drcontext);
+#else
+	thread_data* data = (thread_data*)drmgr_get_tls_field(drcontext, tls_index);
+#endif
 	int& untrusted_function_calling = data->untrusted_function_calling;
 
 	if(untrusted_function_calling) 
@@ -1567,7 +1600,11 @@ static void
 at_jmp(app_pc instr_addr, app_pc target_addr)
 {
 	void* drcontext = dr_get_current_drcontext();
+#ifndef USE_DRMGR
 	thread_data* data = (thread_data*)dr_get_tls_field(drcontext);
+#else
+	thread_data* data = (thread_data*)drmgr_get_tls_field(drcontext, tls_index);
+#endif
 	int& untrusted_function_calling = data->untrusted_function_calling;
 
 	if(untrusted_function_calling) return;
@@ -1597,7 +1634,11 @@ static void
 at_jmp_ind(app_pc instr_addr, app_pc target_addr)
 {
 	void* drcontext = dr_get_current_drcontext();
+#ifndef USE_DRMGR
 	thread_data* data = (thread_data*)dr_get_tls_field(drcontext);
+#else
+	thread_data* data = (thread_data*)drmgr_get_tls_field(drcontext, tls_index);
+#endif
 	int& untrusted_function_calling = data->untrusted_function_calling;
 
 	if(untrusted_function_calling) return;
@@ -1622,7 +1663,11 @@ static void
 at_others(app_pc pc)
 {
 	void* drcontext = dr_get_current_drcontext();
+#ifndef USE_DRMGR
 	thread_data* data = (thread_data*)dr_get_tls_field(drcontext);
+#else
+	thread_data* data = (thread_data*)drmgr_get_tls_field(drcontext, tls_index);
+#endif
 	int& untrusted_function_calling = data->untrusted_function_calling;
 
 	if(untrusted_function_calling) return;
@@ -1640,7 +1685,11 @@ event_basic_block(void *drcontext, void *tag, instrlist_t *bb,
 {
     instr_t *instr;
 	int instr_count = 0;
+#ifndef USE_DRMGR
 	thread_data* data = (thread_data*)dr_get_tls_field(drcontext);
+#else
+	thread_data* data = (thread_data*)drmgr_get_tls_field(drcontext, tls_index);
+#endif
 	int& block_cnt = data->instr_count;
 	file_t f = data->f;
 	dr_mcontext_t mc = {sizeof(mc),DR_MC_ALL};
@@ -1715,21 +1764,25 @@ event_module_load(void *drcontext, const module_data_t *info, bool loaded)
     name = dr_module_preferred_name(info);
 	if (name == NULL) name = "";
 
-	dr_fprintf(global_log, "\nmodule load event: \"%s\" "PFX"-"PFX" %s\n",
+	dr_fprintf(f_global, "\nmodule load event: \"%s\" "PFX"-"PFX" %s\n",
 		name, info->start, info->end, info->full_path);
+
+#ifdef USE_DRMGR
+	replace_module_load(drcontext, info, loaded);
+#endif
 
 	for(int i = 0; i < sizeof(black_dll)/sizeof(black_dll[0]); i++)
 	{
 		if(text_matches_any_pattern(name, black_dll[i], true))
 		{
-			dr_fprintf(global_log, "couldnot skip this module\n");
+			dr_fprintf(f_global, "couldnot skip this module\n");
 			return;
 		}
 	}
 
 	if(text_matches_any_pattern(info->full_path, whitelist_lib, true))
 	{
-		dr_fprintf(global_log, "lib_whitelist module %s\n", info->names.module_name);
+		dr_fprintf(f_global, "lib_whitelist module %s\n", info->names.module_name);
 		skip_list.insert(range(info->start, info->end));
 	}
 	else
@@ -1738,7 +1791,7 @@ event_module_load(void *drcontext, const module_data_t *info, bool loaded)
 		{
 			if(_stricmp(white_dll[i], name) == 0)
 			{
-				dr_fprintf(global_log, "whitelist module %s\n", name);
+				dr_fprintf(f_global, "whitelist module %s\n", name);
 				skip_list.insert(range(info->start, info->end));
 				break;
 			}
@@ -1762,7 +1815,7 @@ event_thread_init(void *drcontext)
 	TEB* teb = get_TEB_from_tid(id);
 	data->stack_bottom = (app_pc)teb->StackBase;
 	data->stack_top = (app_pc)teb->StackLimit;
-	dr_fprintf(global_log, "stack is "PFX"-"PFX"\n", data->stack_bottom, data->stack_top);
+	dr_fprintf(f_global, "stack is "PFX"-"PFX"\n", data->stack_bottom, data->stack_top);
 	dr_fprintf(f, "stack is "PFX"-"PFX"\n", data->stack_bottom, data->stack_top);
 #else
 	data->stack_bottom = 0;
@@ -1770,13 +1823,21 @@ event_thread_init(void *drcontext)
 #endif
 
     /* store it in the slot provided in the drcontext */
-    dr_set_tls_field(drcontext, data);
+#ifndef USE_DRMGR
+	dr_set_tls_field(drcontext, data);
+#else
+	drmgr_set_tls_field(drcontext, tls_index, data);
+#endif
 }
 
 static void
 event_thread_exit(void *drcontext)
 {
+#ifndef USE_DRMGR
     thread_data* data = (thread_data*)dr_get_tls_field(drcontext);
+#else
+	thread_data* data = (thread_data*)drmgr_get_tls_field(drcontext, tls_index);
+#endif
 	file_t f = data->f;
 
 	for(memory_list::iterator it = data->taint_memory.begin();
@@ -1794,9 +1855,129 @@ event_exit(void)
 {
     dr_mutex_destroy(stats_mutex);
 
-	dr_fprintf(global_log, "====== log end ======\n");
-	close_file(global_log);
+	dr_fprintf(f_global, "====== log end ======\n");
+	close_file(f_global);
 }
+
+#ifdef USE_DRMGR
+
+typedef struct shared_data_t
+{
+	int skip;
+	int insert_count;
+}shared_data;
+
+static dr_emit_flags_t
+event_bb_app2app(void *drcontext, void *tag, instrlist_t *bb,
+                 bool for_trace, bool translating, OUT void **user_data)
+{
+	shared_data* sd = (shared_data*)dr_thread_alloc(drcontext, sizeof(*sd));
+    memset(sd, 0, sizeof(*sd));
+    *user_data = (void *)sd;
+
+    return DR_EMIT_DEFAULT;
+}
+
+static dr_emit_flags_t
+event_bb_analysis(void *drcontext, void *tag, instrlist_t *bb,
+                  bool for_trace, bool translating, void *user_data)
+{
+	thread_data* data = (thread_data*)drmgr_get_tls_field(drcontext, tls_index);
+	shared_data *sd = (shared_data *) user_data;
+	instr_t *instr;
+	int instr_count = 0;
+	int& block_cnt = data->instr_count;
+	file_t f = data->f;
+	dr_mcontext_t mc = {sizeof(mc),DR_MC_ALL};
+	dr_get_mcontext(drcontext, &mc);
+	block_cnt ++;
+
+	if(data->stack_bottom == 0)
+	{
+		data->stack_bottom = (app_pc)mc.ebp;
+		data->stack_top = (app_pc)mc.esp;
+	}
+
+	//如果没有调用可疑函数，则可以直接跳过白名单
+	if(data->untrusted_function_calling == 0 && within_whitelist((app_pc)tag))
+	{
+		sd->skip = 1;
+		return DR_EMIT_DEFAULT;
+	}
+
+	//正在调用了可疑函数，可以从两个地方获取函数返回结果
+	//1 .在该函数return时候
+	//2. 在basic block开始处检测
+	if(data->untrusted_function_calling)
+	{
+		if(data->return_address == (app_pc)tag)
+			taint_seed((app_pc)tag, drcontext, &mc);
+		else if(!instr_is_return(instrlist_last(bb)))
+		{
+			sd->skip = 1;
+			return DR_EMIT_DEFAULT;
+		}
+	}
+
+	for (instr = instrlist_first(bb); instr != NULL; instr = instr_get_next(instr))
+		instr_count++;
+	
+	dr_fprintf(f, "\nin dr_basic_block (tag="PFX") esp="PFX" instr_count=%d\n", 
+			tag, mc.esp, instr_count);
+
+	return DR_EMIT_DEFAULT;
+}
+
+/* event_bb_insert calls instrument_mem to instrument every
+ * application memory reference.
+ */
+static dr_emit_flags_t
+event_bb_insert(void *drcontext, void *tag, instrlist_t *bb,
+                instr_t *instr, bool for_trace, bool translating,
+                void *user_data)
+{
+	shared_data *sd = (shared_data *) user_data;
+	int& insert_count = sd->insert_count;
+	
+	if(sd->skip == 1 || insert_count >= MAX_CLEAN_INSTR_COUNT)
+		return DR_EMIT_DEFAULT;
+
+	int opcode = instr_get_opcode(instr);
+	if(opcode == OP_INVALID)	
+		return DR_EMIT_DEFAULT;
+	
+	if (instr_is_call_direct(instr)) {
+		dr_insert_call_instrumentation(drcontext, bb, instr, at_call);
+    } else if (instr_is_call_indirect(instr)) {
+        dr_insert_mbr_instrumentation(drcontext, bb, instr, at_call, SPILL_SLOT_1);
+    } else if (instr_is_return(instr)) {
+        dr_insert_mbr_instrumentation(drcontext, bb, instr, at_return, SPILL_SLOT_1);
+    } else if (instr_is_ubr(instr)) {
+        dr_insert_ubr_instrumentation(drcontext, bb, instr, (app_pc)at_jmp);	
+	} else if(opcode == OP_jmp_ind || opcode == OP_jmp_far_ind){
+		dr_insert_mbr_instrumentation(drcontext, bb, instr, at_jmp_ind, SPILL_SLOT_1);
+	} else if(opc_is_move(opcode) || opc_is_pop(opcode) || opcode_is_arith(opcode)){
+		dr_insert_clean_call(drcontext, bb, instr, taint_propagation, false, 1, 
+			OPND_CREATE_INTPTR(instr_get_app_pc(instr)));
+	} else {
+		insert_count --;
+		//dr_insert_clean_call(drcontext, bb, instr, at_others, false, 1, 
+		//		OPND_CREATE_INTPTR(instr_get_app_pc(instr)));
+	}
+	++insert_count;
+
+    return DR_EMIT_DEFAULT;	
+}
+
+static dr_emit_flags_t
+event_bb_instru2instru(void *drcontext, void *tag, instrlist_t *bb,
+                              bool for_trace, bool translating, void *user_data)
+{
+	shared_data *sd = (shared_data *) user_data;
+	dr_thread_free(drcontext, sd, sizeof(*sd));
+	return DR_EMIT_DEFAULT;
+}
+#endif
 
 DR_EXPORT void 
 dr_init(client_id_t id)
@@ -1826,11 +2007,11 @@ dr_init(client_id_t id)
         dr_free_module_data(data);
     }
 
-	create_global_logfile(logsubdir);
+	create_f_globalfile(logsubdir);
 
-	dr_fprintf(global_log, "options are \"%s\"\n", opstr);
-	dr_fprintf(global_log, "executable \"%s\" is "PFX"-"PFX"\n", app_path, app_base, app_end);
-	dr_fprintf(global_log, "verbose is "PFX"\n", verbose);
+	dr_fprintf(f_global, "options are \"%s\"\n", opstr);
+	dr_fprintf(f_global, "executable \"%s\" is "PFX"-"PFX"\n", app_path, app_base, app_end);
+	dr_fprintf(f_global, "verbose is "PFX"\n", verbose);
 
 	if (drsym_init(IF_WINDOWS_ELSE(NULL, 0)) != DRSYM_SUCCESS) {
         dr_log(NULL, LOG_ALL, 1, "WARNING: unable to initialize symbol translation\n");
@@ -1839,10 +2020,28 @@ dr_init(client_id_t id)
 # ifdef WINDOWS
     dr_enable_console_printing();
 # endif
-    
-	dr_register_bb_event(event_basic_block);
-    dr_register_exit_event(event_exit);
+
+#ifdef USE_DRMGR
+	drmgr_init();
+	drwrap_init();
+	replace_init();
+
+	tls_index = drmgr_register_tls_field();
+#endif
+	
+	dr_register_exit_event(event_exit);
+
+#ifdef USE_DRMGR
+	drmgr_priority_t priority = {sizeof(priority), "taintcheck", NULL, NULL, 0};
+	drmgr_register_bb_instrumentation_ex_event(event_bb_app2app, event_bb_analysis,
+		event_bb_insert, event_bb_instru2instru, &priority);
+	drmgr_register_module_load_event(event_module_load);
+	drmgr_register_thread_init_event(event_thread_init);
+	drmgr_register_thread_exit_event(event_thread_exit);
+#else
 	dr_register_module_load_event(event_module_load);
     dr_register_thread_init_event(event_thread_init);
-    dr_register_thread_exit_event(event_thread_exit);
+	dr_register_thread_exit_event(event_thread_exit);
+	dr_register_bb_event(event_basic_block);
+#endif	
 }

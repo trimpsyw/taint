@@ -460,6 +460,8 @@ _tmain(int argc, TCHAR *targv[])
         }
         else if (strcmp(argv[i], "-dr_debug") == 0) {
             use_dr_debug = true;
+			BUFPRINT(dr_ops, BUFFER_SIZE_ELEMENTS(dr_ops),
+                     drops_sofar, len, "-vm_size 512M ");
             continue;
         }
         else if (strcmp(argv[i], "-dr_release") == 0) {
@@ -586,6 +588,7 @@ _tmain(int argc, TCHAR *targv[])
               "%s/%s/%s/dynamorio.dll", dr_root, lib_arch,
               use_dr_debug ? "debug" : "release");
     NULL_TERMINATE_BUFFER(buf);
+	info("use_dr_debug=%d %s", use_dr_debug, buf);
     if (!file_is_readable(buf)) {
         /* support debug build w/ integrated debug DR build and so no release */
         if (!use_dr_debug) {

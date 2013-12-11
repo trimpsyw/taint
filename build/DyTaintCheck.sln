@@ -6,11 +6,16 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "taintchecklib", "taintcheck
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Win32 = Debug|Win32
 		Release|Win32 = Release|Win32
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{BDF2D1FC-FA1D-439E-AFB1-B7AE05DBBA4C}.Debug|Win32.ActiveCfg = Debug|Win32
+		{BDF2D1FC-FA1D-439E-AFB1-B7AE05DBBA4C}.Debug|Win32.Build.0 = Debug|Win32
 		{BDF2D1FC-FA1D-439E-AFB1-B7AE05DBBA4C}.Release|Win32.ActiveCfg = Release|Win32
 		{BDF2D1FC-FA1D-439E-AFB1-B7AE05DBBA4C}.Release|Win32.Build.0 = Release|Win32
+		{BE3EEB34-E2C3-47FA-BEAD-0AAE41EC76BA}.Debug|Win32.ActiveCfg = Debug|Win32
+		{BE3EEB34-E2C3-47FA-BEAD-0AAE41EC76BA}.Debug|Win32.Build.0 = Debug|Win32
 		{BE3EEB34-E2C3-47FA-BEAD-0AAE41EC76BA}.Release|Win32.ActiveCfg = Release|Win32
 		{BE3EEB34-E2C3-47FA-BEAD-0AAE41EC76BA}.Release|Win32.Build.0 = Release|Win32
 	EndGlobalSection

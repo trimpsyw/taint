@@ -62,6 +62,7 @@
 				ObjectFile="$(IntDir)\"
 				ProgramDataBaseFileName="bin/drtaintcheck.pdb"
 				WarningLevel="3"
+				DebugInformationFormat="3"
 				CompileAs="1"
 			/>
 			<Tool
@@ -84,9 +85,106 @@
 				Version="0.0"
 				LinkIncremental="1"
 				AdditionalLibraryDirectories=""
+				GenerateDebugInformation="true"
 				ProgramDatabaseFile="bin/drtaintcheck.pdb"
 				SubSystem="1"
 				ImportLibrary="bin\release\drtaintcheck.lib"
+			/>
+			<Tool
+				Name="VCALinkTool"
+			/>
+			<Tool
+				Name="VCManifestTool"
+			/>
+			<Tool
+				Name="VCXDCMakeTool"
+			/>
+			<Tool
+				Name="VCBscMakeTool"
+			/>
+			<Tool
+				Name="VCFxCopTool"
+			/>
+			<Tool
+				Name="VCAppVerifierTool"
+			/>
+			<Tool
+				Name="VCPostBuildEventTool"
+			/>
+		</Configuration>
+		<Configuration
+			Name="Debug|Win32"
+			OutputDirectory="$(ConfigurationName)"
+			IntermediateDirectory="$(ConfigurationName)"
+			ConfigurationType="1"
+			UseOfMFC="0"
+			ATLMinimizesCRunTimeLibraryUsage="false"
+			CharacterSet="2"
+			>
+			<Tool
+				Name="VCPreBuildEventTool"
+			/>
+			<Tool
+				Name="VCCustomBuildTool"
+			/>
+			<Tool
+				Name="VCXMLDataGeneratorTool"
+			/>
+			<Tool
+				Name="VCWebServiceProxyGeneratorTool"
+			/>
+			<Tool
+				Name="VCMIDLTool"
+				AdditionalIncludeDirectories="..\..\cmake\..\include;..\..\cmake\..\ext\include;"
+				MkTypLibCompatible="false"
+				TargetEnvironment="1"
+				GenerateStublessProxies="true"
+				TypeLibraryName="$(InputName).tlb"
+				OutputDirectory="$(IntDir)"
+				HeaderFileName="$(InputName).h"
+				DLLDataFileName=""
+				InterfaceIdentifierFileName="$(InputName)_i.c"
+				ProxyFileName="$(InputName)_p.c"
+			/>
+			<Tool
+				Name="VCCLCompilerTool"
+				Optimization="0"
+				InlineFunctionExpansion="0"
+				AdditionalIncludeDirectories="..\..\cmake\..\include;..\..\cmake\..\ext\include;"
+				PreprocessorDefinitions="WIN32;_WINDOWS;_DEBUG;WIN32;_WINDOWS;X86_32;WINDOWS;DYNAMORIO_STANDALONE;SHOW_RESULTS;SHOW_SYMBOLS;_CRT_SECURE_NO_WARNINGS;CMAKE_INTDIR=\&quot;Release\&quot;"
+				ExceptionHandling="0"
+				RuntimeLibrary="0"
+				AssemblerListingLocation="Debug"
+				ObjectFile="$(IntDir)\"
+				ProgramDataBaseFileName="bin/drtaintcheck.pdb"
+				WarningLevel="3"
+				DebugInformationFormat="3"
+				CompileAs="1"
+			/>
+			<Tool
+				Name="VCManagedResourceCompilerTool"
+			/>
+			<Tool
+				Name="VCResourceCompilerTool"
+				PreprocessorDefinitions="WIN32;_WINDOWS;NDEBUG;WIN32;_WINDOWS;X86_32;WINDOWS;DYNAMORIO_STANDALONE;SHOW_RESULTS;SHOW_SYMBOLS;_CRT_SECURE_NO_WARNINGS;CMAKE_INTDIR=\&quot;Release\&quot;"
+				AdditionalIncludeDirectories="..\..\cmake\..\include;..\..\cmake\..\ext\include;"
+			/>
+			<Tool
+				Name="VCPreLinkEventTool"
+			/>
+			<Tool
+				Name="VCLinkerTool"
+				LinkLibraryDependencies="false"
+				AdditionalOptions=" /machine:X86 /nodefaultlib"
+				AdditionalDependencies="kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib libcmt.lib ..\..\lib32\debug\dynamorio.lib ..\..\lib32\drinjectlib.lib ..\..\lib32\drconfiglib.lib ..\..\lib32\debug\drdecode.lib ..\..\lib32\ntdll_imports.lib imagehlp.lib $(NOINHERIT)"
+				OutputFile="bin\drtaintcheck.exe"
+				Version="0.0"
+				LinkIncremental="1"
+				AdditionalLibraryDirectories=""
+				GenerateDebugInformation="true"
+				ProgramDatabaseFile="bin/drtaintcheck.pdb"
+				SubSystem="1"
+				ImportLibrary="bin\debug\drtaintcheck.lib"
 			/>
 			<Tool
 				Name="VCALinkTool"
@@ -122,6 +220,18 @@
 				>
 				<FileConfiguration
 					Name="Release|Win32"
+					>
+					<Tool
+						Name="VCCLCompilerTool"
+						Optimization="2"
+						RuntimeLibrary="0"
+						BufferSecurityCheck="false"
+						WarningLevel="3"
+						DisableSpecificWarnings="4100;4127;4054"
+					/>
+				</FileConfiguration>
+				<FileConfiguration
+					Name="Debug|Win32"
 					>
 					<Tool
 						Name="VCCLCompilerTool"

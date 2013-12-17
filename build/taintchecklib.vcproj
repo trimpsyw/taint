@@ -52,18 +52,19 @@
 			/>
 			<Tool
 				Name="VCCLCompilerTool"
-				Optimization="2"
-				InlineFunctionExpansion="2"
-				AdditionalIncludeDirectories="..\..\cmake\..\include;..\..\cmake\..\ext\include;"
-				PreprocessorDefinitions="WIN32;_WINDOWS;NDEBUG;WIN32;_WINDOWS;X86_32;WINDOWS;SHOW_RESULTS;SHOW_SYMBOLS;_CRT_SECURE_NO_WARNINGS;CMAKE_INTDIR=\&quot;Release\&quot;;taintchecklib_EXPORTS"
-				ExceptionHandling="1"
-				RuntimeLibrary="2"
+				AdditionalOptions="/D &quot;ASSEMBLE_WITH_MASM&quot; "
+				Optimization="4"
+				InlineFunctionExpansion="0"
+				AdditionalIncludeDirectories="..\..\cmake\..\include;..\..\cmake\..\ext\include;..\drsyscall"
+				PreprocessorDefinitions="USE_DRMGR;USE_DRSYMS;WIN32;_WINDOWS;NDEBUG;X86_32;WINDOWS;SHOW_RESULTS;SHOW_SYMBOLS;_CRT_SECURE_NO_WARNINGS;BUILD_NUMBER=1;VERSION_NUMBER=1.1.0;VERSION_STRING=\&quot;1.1.0\&quot;;CLIENT_LIBNAME=taintchecklib;CMAKE_INTDIR=\&quot;Release\&quot;;taintchecklib_EXPORTS"
+				ExceptionHandling="0"
+				RuntimeLibrary="0"
 				RuntimeTypeInfo="true"
 				AssemblerListingLocation="Release"
 				ObjectFile="$(IntDir)\"
 				ProgramDataBaseFileName="bin\release/taintchecklib.pdb"
-				WarningLevel="3"
-				DebugInformationFormat="3"
+				WarningLevel="1"
+				DebugInformationFormat="0"
 				CompileAs="2"
 			/>
 			<Tool
@@ -71,7 +72,7 @@
 			/>
 			<Tool
 				Name="VCResourceCompilerTool"
-				PreprocessorDefinitions="WIN32;_WINDOWS;NDEBUG;WIN32;_WINDOWS;X86_32;WINDOWS;SHOW_RESULTS;SHOW_SYMBOLS;_CRT_SECURE_NO_WARNINGS;CMAKE_INTDIR=\&quot;Release\&quot;;taintchecklib_EXPORTS"
+				PreprocessorDefinitions="WIN32;_WINDOWS;NDEBUG;WIN32;_WINDOWS;X86_32;WINDOWS;SHOW_RESULTS;SHOW_SYMBOLS;_CRT_SECURE_NO_WARNINGS;CLIENT_LIBNAME=taintchecklib;CMAKE_INTDIR=\&quot;Release\&quot;;taintchecklib_EXPORTS"
 				AdditionalIncludeDirectories="..\..\cmake\..\include;..\..\cmake\..\ext\include;"
 			/>
 			<Tool
@@ -80,13 +81,13 @@
 			<Tool
 				Name="VCLinkerTool"
 				LinkLibraryDependencies="false"
-				AdditionalOptions=" /machine:X86  /nodefaultlib:libcmt /nodefaultlib:msvcrt /dynamicbase:no /nxcompat /safeseh:no /opt:ref /opt:icf /debug"
-				AdditionalDependencies="$(NOINHERIT) kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib libcmt.lib dynamorio\lib32\release\dynamorio.lib dynamorio\ext\lib32\release\drcontainers.lib dynamorio\ext\lib32\release\drmgr.lib dynamorio\ext\lib32\release\drx.lib dynamorio\ext\lib32\release\drutil.lib dynamorio\ext\lib32\release\drwrap.lib dynamorio\ext\lib32\release\drsyms.lib dynamorio\core\ntdll_imports.lib libcpmt.lib dbghelp.lib dynamorio\lib32\dbghelp_imports.lib dynamorio\lib32\dwarf.lib dynamorio\lib32\elftc.lib dynamorio\core\ntdll_imports.lib libcmt.lib dynamorio\ext\lib32\release\drcontainers.lib dynamorio\ext\lib32\release\drmgr.lib dynamorio\ext\lib32\release\drx.lib dynamorio\lib32\release\dynamorio.lib &#x0A;"
+				AdditionalOptions=" /machine:X86 /nodefaultlib /base:0x73800000 /dynamicbase:no /nxcompat /safeseh:no /opt:ref /opt:icf /debug"
+				AdditionalDependencies="$(NOINHERIT) kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib libcmt.lib dynamorio\lib32\release\dynamorio.lib dynamorio\ext\lib32\release\drcontainers.lib dynamorio\ext\lib32\release\drmgr.lib dynamorio\ext\lib32\release\drx.lib dynamorio\ext\lib32\release\drutil.lib dynamorio\ext\lib32\release\drwrap.lib dynamorio\ext\lib32\release\drsyms.lib dynamorio\core\ntdll_imports.lib libcpmt.lib dbghelp.lib dynamorio\lib32\dbghelp_imports.lib dynamorio\lib32\dwarf.lib dynamorio\lib32\elftc.lib dynamorio\core\ntdll_imports.lib libcmt.lib dynamorio\ext\lib32\release\drcontainers.lib dynamorio\drmf\lib32\release\drsyscall_int.lib dynamorio\ext\lib32\release\drmgr.lib dynamorio\ext\lib32\release\drx.lib dynamorio\lib32\release\dynamorio.lib"
 				OutputFile="bin\release\taintchecklib.dll"
-				Version="0.0"
+				Version="1.0"
 				LinkIncremental="1"
 				AdditionalLibraryDirectories=""
-				GenerateDebugInformation="true"
+				GenerateDebugInformation="false"
 				ProgramDatabaseFile="bin\release\taintchecklib.pdb"
 				ImportLibrary="bin\release\taintchecklib.lib"
 			/>
@@ -151,7 +152,7 @@
 				Optimization="0"
 				InlineFunctionExpansion="0"
 				AdditionalIncludeDirectories="..\..\cmake\..\include;..\..\cmake\..\ext\include;"
-				PreprocessorDefinitions="WIN32;_WINDOWS;_DEBUG;X86_32;WINDOWS;SHOW_RESULTS;SHOW_SYMBOLS;_CRT_SECURE_NO_WARNINGS;CMAKE_INTDIR=\&quot;Debug\&quot;;taintchecklib_EXPORTS"
+				PreprocessorDefinitions="WIN32;_WINDOWS;_DEBUG;X86_32;WINDOWS;SHOW_RESULTS;SHOW_SYMBOLS;_CRT_SECURE_NO_WARNINGS;CLIENT_LIBNAME=taintchecklib;CMAKE_INTDIR=\&quot;Debug\&quot;;taintchecklib_EXPORTS"
 				ExceptionHandling="0"
 				RuntimeLibrary="0"
 				RuntimeTypeInfo="true"
@@ -167,7 +168,7 @@
 			/>
 			<Tool
 				Name="VCResourceCompilerTool"
-				PreprocessorDefinitions="WIN32;_WINDOWS;_DEBUG;WIN32;_WINDOWS;X86_32;WINDOWS;SHOW_RESULTS;SHOW_SYMBOLS;_CRT_SECURE_NO_WARNINGS;CMAKE_INTDIR=\&quot;debug\&quot;;taintchecklib_EXPORTS"
+				PreprocessorDefinitions="WIN32;_WINDOWS;_DEBUG;WIN32;_WINDOWS;X86_32;WINDOWS;SHOW_RESULTS;SHOW_SYMBOLS;_CRT_SECURE_NO_WARNINGS;CLIENT_LIBNAME=taintchecklib;CMAKE_INTDIR=\&quot;debug\&quot;;taintchecklib_EXPORTS"
 				AdditionalIncludeDirectories="..\..\cmake\..\include;..\..\cmake\..\ext\include;"
 			/>
 			<Tool
@@ -234,15 +235,35 @@
 					/>
 				</FileConfiguration>
 			</File>
+			<File
+				RelativePath="..\taintcheck.hpp"
+				>
+			</File>
 		</Filter>
-		<File
-			RelativePath="..\replace.c"
+		<Filter
+			Name="common"
 			>
-		</File>
-		<File
-			RelativePath="..\replace.h"
-			>
-		</File>
+			<File
+				RelativePath="..\replace.c"
+				>
+			</File>
+			<File
+				RelativePath="..\replace.h"
+				>
+			</File>
+			<File
+				RelativePath="..\utils.c"
+				>
+			</File>
+			<File
+				RelativePath="..\utils.h"
+				>
+			</File>
+			<File
+				RelativePath="..\windefs.h"
+				>
+			</File>
+		</Filter>
 	</Files>
 	<Globals>
 	</Globals>

@@ -63,7 +63,7 @@
 				ProgramDataBaseFileName="bin/drtaintcheck.pdb"
 				WarningLevel="3"
 				DebugInformationFormat="3"
-				CompileAs="1"
+				CompileAs="0"
 			/>
 			<Tool
 				Name="VCManagedResourceCompilerTool"

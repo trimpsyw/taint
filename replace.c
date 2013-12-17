@@ -33,6 +33,7 @@
 #include "dr_api.h"
 #include "drwrap.h"
 #include "utils.h"
+#include "replace.h"
 #undef _DR_EVENTS_H_
 #include "dr_api.h"
 #include <limits.h>  /* UCHAR_MAX */
@@ -44,9 +45,7 @@
 #endif
 # include "drsyms.h"
 
-#define USE_DRSYMS
-
-uint op_verbose_level;
+//uint op_verbose_level;
 /* On Windows, keep this updated with drmemory.pl which queries these pre-run.
  *
  * When adding, make sure the regexs passed to find_syms_regex() cover
@@ -1053,7 +1052,7 @@ enumerate_syms_cb(drsym_info_t *info, drsym_error_t status, void *data)
                      * avoid this type lookup next time.
                      */
                     name = replace_routine_wide_alt[i-1];
-                    i = (uint) hashtable_lookup(&replace_name_table, (void *)name);
+                    i = (uint)hashtable_lookup(&replace_name_table, (void *)name);
                 } else
                     replace = false;
             } else if (arg_type->elt_type->kind != DRSYM_TYPE_INT ||
@@ -1113,46 +1112,6 @@ wrap_UuidCreate_post(void *wrapcxt, void *user_data)
 }
 #endif
 
-/* if returns false, calls instr_free() on inst first */
-bool
-safe_decode(void *drcontext, app_pc pc, instr_t *inst, app_pc *next_pc /*OPTIONAL OUT*/)
-{
-    app_pc nxt;
-    DR_TRY_EXCEPT(drcontext, {
-        nxt = decode(drcontext, pc, inst);
-    }, { /* EXCEPT */
-        /* in case decode filled something in before crashing */
-        instr_free(drcontext, inst);
-        return false;
-    });
-    if (next_pc != NULL)
-        *next_pc = nxt;
-    return true;
-}
-
-bool
-module_imports_from_msvc(const module_data_t *mod)
-{
-    bool res = false;
-    dr_module_import_iterator_t *iter =
-        dr_module_import_iterator_start(mod->handle);
-# ifdef DEBUG
-    const char *modname = dr_module_preferred_name(mod);
-    if (modname == NULL)
-        modname = "";
-# endif
-    while (dr_module_import_iterator_hasnext(iter)) {
-        dr_module_import_t *imp = dr_module_import_iterator_next(iter);
-        LOG(3, "module %s imports from %s\n", modname, imp->modname);
-        if (text_matches_pattern(imp->modname, "msvc*.dll", FILESYS_CASELESS)) {
-            res = true;
-            break;
-        }
-    }
-    dr_module_import_iterator_stop(iter);
-    return res;
-}
-
 app_pc
 get_libc_base(app_pc *libc_end_out OUT)
 {
@@ -1192,7 +1151,7 @@ get_libc_base(app_pc *libc_end_out OUT)
 #endif
         }
         dr_module_iterator_stop(iter);
-        LOG(2, "libc is "PFX"-"PFX"\n", libc_base, libc_end);
+        dr_fprintf(f_global, "libc is "PFX"-"PFX"\n", libc_base, libc_end);
     }
     if (libc_end_out != NULL)
         *libc_end_out = libc_end;
@@ -1236,6 +1195,14 @@ get_libcpp_base(void)
     return libcpp_base;
 }
 
+static void
+find_syms_regex(sym_enum_data_t *edata, const char *regex)
+{
+    if (!lookup_all_symbols(edata->mod, regex, false/*!full*/,
+                            enumerate_syms_cb, (void *)edata))
+        dr_fprintf(f_global, "WARNING: failed to look up symbols: %s\n", regex);
+}
+
 /* XXX: better to walk hashtable on remove, like alloc.c does, instead of
  * re-doing all these symbol queries
  */
@@ -1261,6 +1228,7 @@ replace_in_module(const module_data_t *mod, bool add)
 #endif
 #ifdef WINDOWS
     const char *modname = dr_module_preferred_name(mod);
+    dr_fprintf(f_global, "%s: %d\n", __FUNCTION__, module_imports_from_msvc(mod));
     if (module_imports_from_msvc(mod) &&
         (modname == NULL ||
          (!text_matches_pattern(modname, "msvcp*.dll", true/*ignore case*/) &&
@@ -1271,8 +1239,8 @@ replace_in_module(const module_data_t *mod, bool add)
          * unlikely to have the optimizations that cause false positives.
          * XXX: Look through imported funcs?
          */
-        dr_fprintf(f_global, "module %s imports from msvc* so not searching inside it\n",
-            modname == NULL ? "" : modname);
+	    dr_fprintf(f_global, "%s: module %s imports from msvc* so not searching inside it\n",
+            __FUNCTION__, modname == NULL ? "" : modname);
         return;
     }
 #else
@@ -1287,11 +1255,11 @@ replace_in_module(const module_data_t *mod, bool add)
         }
     }
 #endif
-    ASSERT(options.replace_libc, "should not be called if op not on");
     /* step 1: find and replace symbols in exports 
      * if we find an export we can't mark as processed b/c
      * there can be other symbols of same name.
      */
+	dr_fprintf(f_global, "Step 1\n");
     for (i=0; i<REPLACE_NUM; i++) {
         dr_export_info_t info;
         app_pc addr = NULL;
@@ -1327,6 +1295,60 @@ replace_in_module(const module_data_t *mod, bool add)
              */
             IF_LINUX(ASSERT(mod->start != libc, "can't find libc routine to replace"));
         }
+    }
+
+	dr_fprintf(f_global, "Step 2\n");
+	for (i = 0; i < REPLACE_NUM; i++) {
+        size_t modoffs;
+        uint count;
+        uint idx;
+        dr_fprintf(f_global, "Search %s in symcache\n", replace_routine_name[i]);
+        if (!edata.processed[i]) {
+            dr_fprintf(f_global, "did not find %s in symcache\n", replace_routine_name[i]);
+            missing_entry = true;
+        }
+    }
+
+	/* step 3, some symbols are not found in symcache, lookup them in modules */
+    dr_fprintf(f_global, "Step 3\n");
+    if (missing_entry) {
+        /* PR 486382: look up these symbols online for all modules.
+         * We rely on drsym_init() having been called during init.
+         * It's faster to look up multiple via regex (xref i#315)
+         * when most modules don't have any of the replacement syms.
+         */
+        /* These regex cover all function names we replace.  Both
+         * number of syms and number of queries count.  This is a good
+         * compromise.  "*mem*" has too many matches, while
+         * "mem[scrm]*", "*wmem*", "str[crln]*", and "wcs*" is too
+         * many queries.  Note that dbghelp does not support a regex
+         * symbol for "0 or 1 chars".
+         */
+#if 0
+		bool found_modules = false;
+		
+		found_modules = lookup_all_symbols(edata.mod, "[msw]?????", false, enumerate_syms_cb, &edata) |
+			lookup_all_symbols(edata.mod, "[msw]??????", false, enumerate_syms_cb, &edata);
+		if (!found_modules && !lookup_all_symbols(edata.mod, "", false, enumerate_syms_cb, &edata)){
+				dr_fprintf(f_global, "WARNING: failed to look up symbols to replace\n");
+		}
+#else
+		dr_fprintf(f_global, "missing_entry %d %d\n", missing_entry, lookup_has_fast_search(mod));
+        if (lookup_has_fast_search(mod)) {
+            /* N.B.: if you change these regexes, bump SYMCACHE_VERSION! */
+            find_syms_regex(&edata, "[msw]?????");
+            find_syms_regex(&edata, "[msw]??????");
+# ifdef LINUX
+            find_syms_regex(&edata, "strchrnul");
+            find_syms_regex(&edata, "rawmemchr");
+# endif
+        } else {
+            /* better to do just one walk */
+            if (!lookup_all_symbols(edata.mod, "", false/*!full*/,
+                                    enumerate_syms_cb, (void *)&edata))
+                dr_fprintf(f_global, "WARNING: failed to look up symbols to replace\n");
+        }
+#endif
     }
 }
 

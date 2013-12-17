@@ -27,6 +27,10 @@
 #ifndef _REPLACE_H_
 #define _REPLACE_H_ 1
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 void
 replace_init(void);
 
@@ -44,5 +48,9 @@ in_replace_routine(app_pc pc);
 
 bool
 in_replace_memset(app_pc pc);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* _REPLACE_H_ */

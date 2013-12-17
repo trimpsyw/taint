@@ -31,6 +31,10 @@
 
 #include <limits.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #ifdef WINDOWS
 # define IF_WINDOWS(x) x
 # define IF_WINDOWS_(x) x, 
@@ -200,6 +204,9 @@ extern bool op_pause_via_loop;
 extern bool op_ignore_asserts;
 extern uint op_prefix_style;
 extern file_t f_global;
+extern file_t f_results;
+extern client_id_t client_id;
+extern app_pc ntdll_base;
 #ifdef USE_DRSYMS
 # ifdef TOOL_DR_MEMORY
 extern file_t f_results;
@@ -378,9 +385,9 @@ extern int tls_idx_util;
     stmt                       \
 } while (0)
 #else
-# define LOGF(level, pt, fmt, ...) /* nothing */
+# define LOGF(level, pt, fmt, ...)  dr_fprintf(f_global, fmt, __VA_ARGS__) /* nothing */
 # define LOGPT(level, pt, fmt, ...) /* nothing */
-# define LOG(level, fmt, ...) /* nothing */
+# define LOG(level, fmt, ...) dr_fprintf(f_global, fmt, __VA_ARGS__) /* nothing */
 # define LOG_LARGE_F(level, pt, fmt, ...) /* nothing */
 # define LOG_LARGE_PT(level, pt, fmt, ...) /* nothing */
 # define LOG_LARGE(level, fmt, ...) /* nothing */
@@ -670,9 +677,6 @@ get_app_commandline(void);
 int
 sysnum_from_name(const char *name);
 
-//bool
-//get_sysnum(const char *name, drsys_sysnum_t *var, bool ok_to_fail);
-
 bool
 running_on_Win7_or_later(void);
 
@@ -754,12 +758,14 @@ nonheap_free(void *p, size_t size, heapstat_t type);
 void
 heap_dump_stats(file_t f);
 
+/*
 #define dr_global_alloc DO_NOT_USE_use_global_alloc
 #define dr_global_free  DO_NOT_USE_use_global_free
 #define dr_thread_alloc DO_NOT_USE_use_thread_alloc
 #define dr_thread_free  DO_NOT_USE_use_thread_free
 #define dr_nonheap_alloc DO_NOT_USE_use_nonheap_alloc
 #define dr_nonheap_free  DO_NOT_USE_use_nonheap_free
+*/
 
 char *
 drmem_strdup(const char *src, heapstat_t type);
@@ -834,5 +840,9 @@ utils_thread_exit(void *drcontext);
 
 void
 utils_thread_set_file(void *drcontext, file_t f);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* _UTILS_H_ */

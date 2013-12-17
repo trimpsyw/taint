@@ -7,22 +7,21 @@
  * taintcheck.cpp
  */
 
-#define USE_DRMGR
-
 #include "dr_api.h"
 #include "drsyms.h"
+#include "hashtable.h"
+#include "taintcheck.hpp"
 #ifdef USE_DRMGR
 #include "drmgr.h"
 #include "drwrap.h"
+#include "utils.h"
+#include "replace.h"
 #endif
-#include <vector>
-#include <algorithm>
 #include <string>
 #include <stddef.h>
 #ifdef WINDOWS
 # include "windefs.h"
 #endif
-#include "replace.h"
 
 static const char * const build_date = __DATE__ " " __TIME__;
 
@@ -40,157 +39,10 @@ typedef enum{
 #ifdef WINDOWS
 # define DISPLAY_STRING(msg) dr_messagebox(msg)
 # define IF_WINDOWS(x) x
-# define ATOMIC_INC32(x) InterlockedIncrement((volatile LONG *)&(x))
-# define ATOMIC_DEC32(x) InterlockedDecrement((volatile LONG *)&(x))
-# define ATOMIC_ADD32(x, val) InterlockedExchangeAdd((volatile LONG *)&(x), val)
-
-static inline int
-atomic_add32_return_sum(volatile int *x, int val)
-{
-    return (ATOMIC_ADD32(*x, val) + val);
-}
-
-typedef enum _THREADINFOCLASS {
-    ThreadBasicInformation,
-    ThreadTimes,
-    ThreadPriority,
-    ThreadBasePriority,
-    ThreadAffinityMask,
-    ThreadImpersonationToken,
-    ThreadDescriptorTableEntry,
-    ThreadEnableAlignmentFaultFixup,
-    ThreadEventPair_Reusable,
-    ThreadQuerySetWin32StartAddress,
-    ThreadZeroTlsCell,
-    ThreadPerformanceCount,
-    ThreadAmILastThread,
-    ThreadIdealProcessor,
-    ThreadPriorityBoost,
-    ThreadSetTlsArrayAddress,
-    ThreadIsIoPending,
-    ThreadHideFromDebugger,
-    MaxThreadInfoClass
-} THREADINFOCLASS;
-
-typedef LONG KPRIORITY;
-
-typedef struct _THREAD_BASIC_INFORMATION { // Information Class 0
-    NTSTATUS ExitStatus;
-    PNT_TIB TebBaseAddress;
-    CLIENT_ID ClientId;
-    KAFFINITY AffinityMask;
-    KPRIORITY Priority;
-    KPRIORITY BasePriority;
-} THREAD_BASIC_INFORMATION, *PTHREAD_BASIC_INFORMATION;
-
-#define InitializeObjectAttributes( p, n, a, r, s ) {   \
-    (p)->Length = sizeof( OBJECT_ATTRIBUTES );          \
-    (p)->RootDirectory = r;                             \
-    (p)->Attributes = a;                                \
-    (p)->ObjectName = n;                                \
-    (p)->SecurityDescriptor = s;                        \
-    (p)->SecurityQualityOfService = NULL;               \
-    }
-
-#define OBJ_CASE_INSENSITIVE    0x00000040L
-
-extern "C"
-{
-	GET_NTDLL(NtQueryInformationThread, (IN HANDLE ThreadHandle,
-                                     IN THREADINFOCLASS ThreadInformationClass,
-                                     OUT PVOID ThreadInformation,
-                                     IN ULONG ThreadInformationLength,
-                                     OUT PULONG ReturnLength OPTIONAL));
-
-	GET_NTDLL(NtOpenThread, (OUT PHANDLE ThreadHandle,
-                         IN ACCESS_MASK DesiredAccess,
-                         IN POBJECT_ATTRIBUTES ObjectAttributes,
-                         IN PCLIENT_ID ClientId));
-
-	GET_NTDLL(NtQueryInformationJobObject, (IN HANDLE JobHandle,
-                                        IN JOBOBJECTINFOCLASS JobInformationClass,
-                                        OUT PVOID JobInformation,
-                                        IN ULONG JobInformationLength,
-                                        OUT PULONG ReturnLength OPTIONAL));
-}
-
-
-TEB *
-get_TEB(void)
-{
-#ifdef X64
-    return (TEB *) __readgsqword(offsetof(TEB, Self));
-#else
-    return (TEB *) __readfsdword(offsetof(TEB, Self));
-#endif
-}
-
-TEB *
-get_TEB_from_handle(HANDLE h)
-{
-    ULONG got;
-    THREAD_BASIC_INFORMATION info;
-    NTSTATUS res;
-    memset(&info, 0, sizeof(THREAD_BASIC_INFORMATION));
-    res = NtQueryInformationThread(h, ThreadBasicInformation,
-                                   &info, sizeof(THREAD_BASIC_INFORMATION), &got);
-    if (!NT_SUCCESS(res) || got != sizeof(THREAD_BASIC_INFORMATION)) {
-        return NULL;
-    }
-    return (TEB *) info.TebBaseAddress;
-}
-
-thread_id_t
-get_tid_from_handle(HANDLE h)
-{
-    ULONG got;
-    THREAD_BASIC_INFORMATION info;
-    NTSTATUS res;
-    memset(&info, 0, sizeof(THREAD_BASIC_INFORMATION));
-    res = NtQueryInformationThread(h, ThreadBasicInformation,
-                                   &info, sizeof(THREAD_BASIC_INFORMATION), &got);
-    if (!NT_SUCCESS(res) || got != sizeof(THREAD_BASIC_INFORMATION)) {
-        return 0;
-    }
-    return (thread_id_t) info.ClientId.UniqueThread;
-}
-
-TEB *
-get_TEB_from_tid(thread_id_t tid)
-{
-    HANDLE h;
-    TEB *teb = NULL;
-    NTSTATUS res;
-    OBJECT_ATTRIBUTES oa;
-    CLIENT_ID cid;
-    /* these aren't really HANDLEs */
-	cid.UniqueProcess = (HANDLE) dr_get_process_id();
-    cid.UniqueThread = (HANDLE) tid;
-    InitializeObjectAttributes(&oa, NULL, OBJ_CASE_INSENSITIVE, NULL, NULL);
-    res = NtOpenThread(&h, THREAD_QUERY_INFORMATION, &oa, &cid);
-    if (NT_SUCCESS(res)) {
-        teb = get_TEB_from_handle(h);
-        dr_close_file(h);
-    } 
-    return teb;
-}
-
 #else
 # define DISPLAY_STRING(msg) dr_printf("%s\n", msg);
 # define IF_WINDOWS(x) /* nothing */
-# define ATOMIC_INC32(x) __asm__ __volatile__("lock incl %0" : "=m" (x) : : "memory")
-# define ATOMIC_DEC32(x) __asm__ __volatile__("lock decl %0" : "=m" (x) : : "memory")
-# define ATOMIC_ADD32(x, val) \
-    __asm__ __volatile__("lock addl %1, %0" : "=m" (x) : "r" (val) : "memory")
 
-static inline int
-atomic_add32_return_sum(volatile int *x, int val)
-{
-    int cur;
-    __asm__ __volatile__("lock xaddl %1, %0" : "=m" (*x), "=r" (cur)
-                         : "1" (val) : "memory");
-    return (cur + val);
-}
 #endif
 
 const char* white_dll[] = {
@@ -211,12 +63,22 @@ const char* black_dll[] = {
 	"msvc*.dll", "kernel32.dll", "ntdll.dll", "KERNELBASE.dll",// "ws2_32.dll", "wsock32.dll",
 };
 
+typedef enum api_call_type_t
+{
+	CALL_UNDEFINED					= 0x0000,
+	CALL_TAINTED_NORMAL_BUFFER		= 0x0010,
+	CALL_TAINTED_NETWORK_BUFFER		= 0x0011,
+	CALL_ALLOCATE_HEAP				= 0x0020,
+	CALL_REALLOCATE_HEAP			= 0x0021,
+	CALL_FREE_HEAP					= 0x0022,
+}api_call_type;
+
 struct api_call_rule_t
 {
-	char module[64];				/* 模块名 */
-	char name[64];					/* 函数名 */
+	char modname[64];				/* 模块名 */
+	char function[64];				/* 函数名 */
 	
-	int param_count:16;			/* 函数参数总个数 */
+	int param_count:16;				/* 函数参数总个数 */
 	
 	int buffer_id:8;				/* 参数索引从1开始计数，0代表返回值 */
 	int buffer_is_char:8;			/* 是否为普通char数组 */
@@ -229,214 +91,35 @@ struct api_call_rule_t
 
 	int succeed_return_status;		/* 函数调用成功返回0还是非0*/ 
 
+	api_call_type call_type;		/* 函数调用类型 */
+
 }rules[] = {
-	{"MSVC*.dll",		"fgets",		3, 1, 1, 2, 0, -1, 0, 1},
-	{"Kernel32.dll",	"ReadFile",		5, 2, 1, 3, 0, 4,	1, 1},
-	{"MSVC*.dll",		"fread",		4, 1, 1, 2, 0, -1, 0, 1},
-	{"ws2_32.dll",		"WSARecvFrom",	9, 2, 0, 3, 0, 4, 1, 0},
-	{"ws2_32.dll",		"WSARecv",		7, 2, 0, 3, 0, 4, 1, 0},
-	{"ws2_32.dll",		"recvfrom",		4, 2, 1, 3, 0, 0, 0, 1},
-	{"ws2_32.dll",		"recv",			4, 2, 1, 3, 0, 0, 0, 1},
-	{"wsock32.dll",		"recvfrom",		4, 2, 1, 3, 0, 0, 0, 1},
-	{"wsock32.dll",		"recv",			4, 2, 1, 3, 0, 0, 0, 1},
+	{"MSVC*.dll",		"fgets",			3, 1, 1, 2, 0, -1, 0, 1, CALL_TAINTED_NORMAL_BUFFER},
+	{"Kernel32.dll",	"ReadFile",			5, 2, 1, 3, 0, 4,	1, 1, CALL_TAINTED_NORMAL_BUFFER},
+	{"MSVC*.dll",		"fread",			4, 1, 1, 2, 0, -1, 0, 1, CALL_TAINTED_NORMAL_BUFFER},
+	{"ws2_32.dll",		"WSARecvFrom",		9, 2, 0, 3, 0, 4, 1, 0, CALL_TAINTED_NETWORK_BUFFER},
+	{"ws2_32.dll",		"WSARecv",			7, 2, 0, 3, 0, 4, 1, 0, CALL_TAINTED_NETWORK_BUFFER},
+	{"ws2_32.dll",		"recvfrom",			4, 2, 1, 3, 0, 0, 0, 1, CALL_TAINTED_NORMAL_BUFFER},
+	{"ws2_32.dll",		"recv",				4, 2, 1, 3, 0, 0, 0, 1, CALL_TAINTED_NORMAL_BUFFER},
+	{"wsock32.dll",		"recvfrom",			4, 2, 1, 3, 0, 0, 0, 1, CALL_TAINTED_NORMAL_BUFFER},
+	{"wsock32.dll",		"recv",				4, 2, 1, 3, 0, 0, 0, 1, CALL_TAINTED_NORMAL_BUFFER},
+	{"ntdll.dll",		"RtlAllocateHeap",	3, 0, 1, 3, 0, -1, 0, 1, CALL_ALLOCATE_HEAP},
+	/* BOOLEAN RtlFreeHeap(PVOID HeapHandle, ULONG Flags, PVOID HeapBase);*/
+	{"ntdll.dll",		"RtlFreeHeap",		3, 3, 1, -1, 0, -1, 0, 1, CALL_FREE_HEAP},
+	/* RtlReAllocateHeap(PVOID HeapHandle, ULONG Flags, PVOID MemoryPointer, ULONG Size );*/
+	{"ntdll.dll",		"RtlReAllocateHeap",4, 3, 1, -1, 0, 4, 0, 1, CALL_REALLOCATE_HEAP},
 };
 
-struct range {
-	app_pc start, end;//[start, end)
+#define CALL_RULES_NUM sizeof(rules)/sizeof(rules[0])
 
-	range(app_pc start, app_pc end) : start(start),end(end) {}
+typedef struct call_routine_entry_t {
+    app_pc pc;
+	const module_data_t *mod;	/* 模块*/
+	char* modname;				/* 模块名称*/
+	char* function;				/* 函数名称*/
+	api_call_rule_t rule;
+}call_routine_entry;
 
-	range(app_pc pc) : start(pc), end(pc+1){}
-
-	bool operator<(const range &range) const {
-		return (this->start<range.start) | (this->start==range.start && this->end<range.end);
-	}
-	bool operator>(const range &range) const {
-		return (this->start>range.start) | (this->start==range.start && this->end>range.end);
-	}
-	bool operator==(const range &range) const {
-		return (this->start>=range.start && this->end<=range.end);
-	}
-
-};
-
-template<class T>
-inline bool is_between(const T &low, const T &value, const T &high) {
-	return (low<=value && value<high);
-}
-
-template<class T>
-inline bool is_between(const T &low, const T &value_low, const T &value_high, const T &high) {
-	return (low<=value_low && value_high<=high);
-}
-
-class merge_pred {
-private:
-	bool aggressive;
-
-	inline static bool is_adjacent(const range &left, const range &right) {
-		return (left.end==right.start);
-	}
-
-	inline static bool is_semiadjacent(const range &left, const range &right) {
-		return (left.end==right.start-2);
-	}
-
-public:
-	merge_pred(bool a) : aggressive(a) {}
-
-	bool operator()(range &left, const range &right) const {
-		if(
-			is_between(left.start, right.start, left.end)
-			|| is_adjacent(left, right)
-		) {
-			left.start=min(left.start, right.start);
-			left.end=max(left.end, right.end);
-			return true;
-		}
-		else return false;
-	}
-};
-
-class memory_list {
-public:
-	typedef range range_type;
-	typedef std::vector<range_type> list_type;
-	typedef list_type::size_type size_type;
-	typedef list_type::iterator iterator;
-	typedef list_type::const_iterator const_iterator;
-
-private:
-	list_type _ranges;
-
-	iterator within(app_pc pc, iterator* which = NULL){
-		iterator p = _ranges.begin();
-		iterator m = _ranges.end();
-		int num = _ranges.size();
-		app_pc s1, s2;
-
-		while(num > 0)
-		{
-			m = p + (num >> 1);
-			s1 = m->start;
-			s2 = m->end;
-
-			if(s1 <= pc && pc < s2)
-				return m;
-
-			if(s1 > pc)		num >>= 1;
-			else			{p = m+1, num = (num-1) >> 1;}
-		}
-
-		if(which) *which = p;
-		return _ranges.end();
-	}
-
-	const_iterator within(app_pc pc, const_iterator* which = NULL)const{
-		const_iterator p = _ranges.begin();
-		const_iterator m = _ranges.end();
-		int num = _ranges.size();
-		app_pc s1, s2;
-
-		while(num > 0)
-		{
-			m = p + (num >> 1);
-			s1 = m->start;
-			s2 = m->end;
-
-			if(s1 <= pc && pc < s2)
-				return m;
-
-			if(s1 > pc)		num >>= 1;
-			else			{p = m+1, num = (num-1) >> 1;}
-		}
-
-		if(which) *which = p;
-		return _ranges.end();
-	}
-
-public:
-	void insert(const range &r){
-		const_iterator which;
-		const_iterator it = within(r.start, &which);
-		
-		if(it == _ranges.end())
-			_ranges.insert(which, r);
-		else
-			_ranges.insert(++it, r);
-
-		iterator here = std::unique(_ranges.begin(), _ranges.end(), merge_pred(true));
-		_ranges.erase(here, _ranges.end());
-	}
-
-	void optimize(bool aggressive=false){
-		std::sort(_ranges.begin(), _ranges.end());
-		iterator end = std::unique(_ranges.begin(), _ranges.end(), merge_pred(aggressive));
-		if(end != _ranges.end())
-			_ranges.erase(end, _ranges.end());
-	}
-
-	bool remove(app_pc start, app_pc end){
-		if(start > end)
-			return false;
-
-		iterator it1, it2;
-		if(within(start, &it1)==_ranges.end() && 
-			within(end, &it2)==_ranges.end() && 
-			it1 == it2)
-			return false;
-		
-		insert(range(start, end));
-
-		iterator it = within(start);
-		if(it != _ranges.end()){
-			if(it->start == start){
-				if(it->end == end) _ranges.erase(it);
-				else it->start = end;//[0,100)-[0,11)=[11,100)
-			}
-			else if(it->end == end)//[0,100)-[11,100)=[0,11)
-				it->end = start;
-			else{//[0,100)-[11,90)=[0,11)+[90,100) 
-				app_pc old_end = it->end;
-				it->end = start;
-				_ranges.insert(++it, range(end, old_end));
-			}
-		}
-		return true;
-	}
-
-	bool find(app_pc pc){
-		if(_ranges.size() == 0) return false;
-		return within(pc) != _ranges.end();
-	}
-
-	iterator at(app_pc pc){
-		return within(pc);
-	}
-	
-	iterator begin() {
-		return this->_ranges.begin();
-	}
-	iterator end() {
-		return this->_ranges.end();
-	}
-
-	const_iterator begin() const {
-		return this->_ranges.begin();
-	}
-	const_iterator end() const {
-		return this->_ranges.end();
-	}
-
-	size_type size() const {
-		return this->_ranges.size();
-	}
-	void clear() {
-		this->_ranges.clear();
-	}
-
-	memory_list() {}
-};
 
 typedef std::vector<std::string> function_tables;
 
@@ -446,7 +129,7 @@ typedef struct thread_data_t
 {
 	file_t f;					/* 日志文件fd */
 	int thread_id;				/* 线程ID */
-	int untrusted_function_calling;	/* 是否正在进行调用非信任函数 */
+	api_call_type call_type;	/* 函数调用类型 */
 	app_pc call_address, into_address, return_address;
 	int buffer_idx;				/* 索引：缓冲区*/
 	int char_buffer;			/* 是否为普通字符串 */
@@ -479,6 +162,11 @@ static client_id_t my_id;
 static int tls_index;
 
 file_t f_global;
+file_t f_results;
+client_id_t client_id;
+app_pc ntdll_base;
+
+static hashtable_t call_routine_table;
 static const char* appnm;
 char logsubdir[MAXIMUM_PATH];
 char whitelist_lib[MAXIMUM_PATH];
@@ -487,73 +175,26 @@ app_pc app_end;
 char app_path[MAXIMUM_PATH];
 show_mask_t verbose;
 
+#undef ELOGF
 #define ELOGF(mask, f, ...) do {   \
     if (verbose & (mask)) \
         dr_fprintf(f, __VA_ARGS__); \
 } while (0)
 
+#undef DOLOG
 # define DOLOG(mask, stmt)  do {	\
     if (verbose & (mask))			\
         stmt                        \
 } while (0)
 
-bool
-text_matches_pattern(const char *text, const char *pattern,
-                     bool ignore_case)
-{
-    /* Match text with pattern and return the result.
-     * The pattern may contain '*' and '?' wildcards.
-     */
-    const char *cur_text = text,
-               *text_last_asterisk = NULL,
-               *pattern_last_asterisk = NULL;
-    char cmp_cur, cmp_pat;
-    while (*cur_text != '\0') {
-        cmp_cur = *cur_text;
-        cmp_pat = *pattern;
-        if (ignore_case) {
-            cmp_cur = (char) tolower(cmp_cur);
-            cmp_pat = (char) tolower(cmp_pat);
-        }
-        if (*pattern == '*') {
-            while (*++pattern == '*') {
-                /* Skip consecutive '*'s */
-            }
-            if (*pattern == '\0') {
-                /* the pattern ends with a series of '*' */
-                return true;
-            }
-            text_last_asterisk = cur_text;
-            pattern_last_asterisk = pattern;
-        } else if ((cmp_cur == cmp_pat) || (*pattern == '?')) {
-            ++cur_text;
-            ++pattern;
-        } else if (text_last_asterisk != NULL) {
-            /* No match. But we have seen at least one '*', so go back
-             * and try at the next position.
-             */
-            pattern = pattern_last_asterisk;
-            cur_text = text_last_asterisk++;
-        } else {
-            return false;
-        }
-    }
-    while (*pattern == '*')
-        ++pattern;
-    return *pattern == '\0';
-}
 
-/* patterns is a null-separated, double-null-terminated list of strings */
-bool
-text_matches_any_pattern(const char *text, const char *patterns, bool ignore_case)
+static void
+call_routine_entry_free(void* p)
 {
-    const char *c = patterns;
-    while (*c != '\0') {
-        if (text_matches_pattern(text, c, ignore_case))
-            return true;
-        c += strlen(c) + 1;
-    }
-    return false;
+	call_routine_entry* e = (call_routine_entry*)p;
+	if(e->modname) free(e->modname);
+	if(e->function)	free(e->function);
+	dr_global_free(p, sizeof(*e));
 }
 
 static bool
@@ -617,30 +258,6 @@ within_global_stack(app_pc pc, app_pc stack_bottom, app_pc stack_top)
 }
 
 #define MAX_OPTION_LEN DR_MAX_OPTIONS_LENGTH
-const char *
-get_option_word(const char *s, char buf[MAX_OPTION_LEN])
-{
-    int i = 0;
-    bool quoted = false;
-    char endquote = '\0';
-    while (*s != '\0' && isspace(*s))
-        s++;
-    if (*s == '\"' || *s == '\'' || *s == '`') {
-        quoted = true;
-        endquote = *s;
-        s++;
-    }
-    while (*s != '\0' && ((!quoted && !isspace(*s)) || (quoted && *s != endquote)) &&
-           i < MAX_OPTION_LEN-1)
-        buf[i++] = *s++;
-    if (quoted && *s == endquote)
-        s++;
-    buf[i] = '\0';
-    if (i == 0 && *s == '\0')
-        return NULL;
-    else
-        return s;
-}
 
 static void 
 process_options(const char* opstr)
@@ -854,6 +471,27 @@ static int lookup_syms(app_pc addr, char* module, char *function, int size)
 	return 0;
 }
 
+static app_pc
+lookup_symbol_or_export(const module_data_t *mod, const char *name, bool internal)
+{
+#ifdef USE_DRSYMS
+    app_pc res;
+    if (mod->full_path != NULL) {
+        if (internal)
+            res = lookup_internal_symbol(mod, name);
+        else
+            res = lookup_symbol(mod, name);
+        if (res != NULL)
+            return res;
+    }
+    res = (app_pc) dr_get_proc_address(mod->handle, name);
+    return res;
+#else
+    return (app_pc) dr_get_proc_address(mod->handle, name);
+#endif
+}
+
+
 static void
 print_propagation(file_t f, int n1, int n2, instr_t* instr, dr_mcontext_t *mc)
 {
@@ -994,10 +632,10 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 #else
 	thread_data* data = (thread_data*)drmgr_get_tls_field(drcontext, tls_index);
 #endif
-	int& untrusted_function_calling = data->untrusted_function_calling;
+	api_call_type& call_type = data->call_type;
 	app_pc& return_address = data->return_address;
 	
-	if(untrusted_function_calling == 0 || return_address != pc)	
+	if(call_type == CALL_UNDEFINED || return_address != pc)	
 		return;
 
 	file_t f = data->f;
@@ -1018,8 +656,21 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 	if((return_status > 0 && (int)mc->eax <= 0) || (return_status == 0 && mc->eax != 0))
 	{
 		dr_fprintf(f, "Failed to call function\n");
-		untrusted_function_calling = 0;
-		return;
+		goto exit;
+	}
+
+	if(call_type == CALL_ALLOCATE_HEAP){
+		read_buffer = (app_pc)mc->eax;
+		dr_fprintf(f_global, "Alloc buffer %d:"PFX"-"PFX"\n", read_size, read_buffer, read_buffer+read_size);
+		goto exit;
+	} else if(call_type == CALL_FREE_HEAP){
+		dr_fprintf(f_global, "Free buffer %d:"PFX"-"PFX"\n", read_size, read_buffer, read_buffer+read_size);
+		goto exit;
+	} else if(call_type == CALL_REALLOCATE_HEAP){
+		dr_fprintf(f_global, "Free buffer %d:"PFX"-"PFX"\n", read_size, read_buffer, read_buffer+read_size);
+		app_pc new_addr = (app_pc)mc->eax;
+		dr_fprintf(f_global, "Alloc buffer %d:"PFX"-"PFX"\n", read_size_ref, new_addr, new_addr+read_size_ref);
+		goto exit;
 	}
 
 	int value;
@@ -1045,7 +696,7 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 
 	if(read_size <= 0)	goto exit;//没有数据
 
-	if(char_buffer)//普通的字符串，无需特别处理
+	if(call_type == CALL_TAINTED_NORMAL_BUFFER)//普通的字符串，无需特别处理
 	{
 		range r(read_buffer, read_buffer+read_size);
 		taint_memory.insert(r);
@@ -1059,7 +710,7 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 			LOG_MEMORY_LIST("[+] stack_memory", f, stack_memory);
 		}
 	}
-	else
+	else if(call_type == CALL_TAINTED_NETWORK_BUFFER)
 	{
 		//处理其他缓冲区，这里处理_WSABUF的情况
 		//struct WSABUF { ULONG len; CHAR *buf; }
@@ -1097,7 +748,7 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 	}
 
 exit:
-	untrusted_function_calling = 0;
+	call_type = CALL_UNDEFINED;
 }
 
 static int
@@ -1197,9 +848,9 @@ taint_propagation(app_pc pc)
 #else
 	thread_data* data = (thread_data*)drmgr_get_tls_field(drcontext, tls_index);
 #endif
-	int& untrusted_function_calling = data->untrusted_function_calling;
+	api_call_type& call_type = data->call_type;
 	
-	if(untrusted_function_calling) return;
+	if(call_type) return;
 
 	file_t f = data->f;
 	reg_status* taint_regs = data->taint_regs;
@@ -1434,9 +1085,9 @@ at_call(app_pc instr_addr, app_pc target_addr)
 #else
 	thread_data* data = (thread_data*)drmgr_get_tls_field(drcontext, tls_index);
 #endif
-	int& untrusted_function_calling = data->untrusted_function_calling;
+	api_call_type& call_type = data->call_type;
 
-	if(untrusted_function_calling) return;
+	if(call_type) return;
 
 	file_t f = data->f;
 	app_pc& call_address = data->call_address;
@@ -1468,38 +1119,37 @@ at_call(app_pc instr_addr, app_pc target_addr)
 	print_address(f, instr_addr, "[CALL @ ]");
 	print_address(f, target_addr, "\tInto");
 
-	char mod[MAX_SYM_RESULT], func1[MAX_SYM_RESULT], func2[MAX_SYM_RESULT];
-	lookup_syms(instr_addr, mod, func1, MAX_SYM_RESULT);
-	lookup_syms(target_addr, mod, func2, MAX_SYM_RESULT);
+	//char mod[MAX_SYM_RESULT], func1[MAX_SYM_RESULT], func2[MAX_SYM_RESULT];
+	//lookup_syms(instr_addr, mod, func1, MAX_SYM_RESULT);
+	//lookup_syms(target_addr, mod, func2, MAX_SYM_RESULT);
 
 	call_address = instr_addr;
 	return_address = instr_addr + length;
 	data->into_address = target_addr;
 
-	if(untrusted_function_calling == 0){
-		for(int j = 0; j < sizeof(rules)/sizeof(struct api_call_rule_t); j++){
-			if((text_matches_any_pattern(mod, rules[j].module, true) || !_stricmp(mod, appnm)) &&
-				!_stricmp(func2, rules[j].name))
-			{
-				untrusted_function_calling = 1;
-				call_address = instr_addr;
-				return_address = instr_addr + length;
-				buffer_idx = rules[j].buffer_id;
-				char_buffer = rules[j].buffer_is_char;
-				size_id = rules[j].size_id;
-				read_size_id = rules[j].read_size_id;
-				read_size_ref = rules[j].read_size_is_reference;
-				succeed_return_status = rules[j].succeed_return_status;
+	if(call_type == CALL_UNDEFINED){
+		call_routine_entry *e;
+		e = (call_routine_entry*)hashtable_lookup(&call_routine_table, target_addr);
+		if(e!= NULL){
+			call_type = e->rule.call_type;
+			call_address = instr_addr;
+			return_address = instr_addr + length;
+			buffer_idx = e->rule.buffer_id;
+			char_buffer = e->rule.buffer_is_char;
+			size_id = e->rule.size_id;
+			read_size_id = e->rule.read_size_id;
+			read_size_ref = e->rule.read_size_is_reference;
+			succeed_return_status = e->rule.succeed_return_status;
 
-				dr_fprintf(f,	"-----------------Thread %d-----------------------\n"
-								PFX" call %s:%s "PFX " and return "PFX"\n"
-								"-------------------------------------------\n", 
-								data->thread_id, 
-								instr_addr, mod, func2, target_addr, return_address);
-				break;
-			}
+			dr_fprintf(f,	"-----------------Thread %d-----------------------\n"
+							PFX" call %s:!%s "PFX " and return "PFX"\n"
+							"-------------------------------------------\n", 
+							data->thread_id, 
+							instr_addr, e->modname, e->function, target_addr, return_address);
 		}
-		if(untrusted_function_calling){
+
+		if(call_type == CALL_TAINTED_NORMAL_BUFFER ||
+			call_type == CALL_TAINTED_NETWORK_BUFFER){
 			app_pc boffset, soffset;
 			size_t size;
 
@@ -1512,25 +1162,28 @@ at_call(app_pc instr_addr, app_pc target_addr)
 
 			dr_safe_read(soffset, 4, &read_size, &size);
 			dr_fprintf(f, "[In] Buffer size "PFX"\n", read_size);
-		} 
-	}
+		} else if(call_type == CALL_ALLOCATE_HEAP){
+			dr_safe_read((app_pc)mc.esp+(size_id-1)*4, 4, &read_size, NULL);
+			dr_fprintf(f, "[In] Allocate size "PFX"\n", read_size);
+		} else if(call_type == CALL_REALLOCATE_HEAP){
+			dr_safe_read((app_pc)mc.esp+(buffer_idx-1)*4, 4, &read_buffer, NULL);
+			dr_fprintf(f, "[In] Original address "PFX"\n", read_buffer);
 
-	if(untrusted_function_calling == 0)
-	{
-		if(!within_whitelist(target_addr)){
-			/*
-			for(int i = funcs.size() - 1; i >= 0; i--){
-				if(_stricmp(funcs[i].c_str(), func1) == 0){
-					break;
-				}
-				funcs.pop_back();
-			}//*/
-			if(funcs.size() == 0)
-				funcs.push_back(func1);
-
-			print_function_tables(f, "NowAt\t", funcs);
-			funcs.push_back(func2);
-			print_function_tables(f, "Call\t", funcs);
+			app_pc heapHandle;
+			dr_safe_read((app_pc)mc.esp+(buffer_idx-1-2)*4, 4, &heapHandle, NULL);
+			read_size = HeapSize(heapHandle, 0, read_buffer);
+			dr_fprintf(f, "[In] Original size "PFX"\n", read_size);
+			
+			dr_safe_read((app_pc)mc.esp+(read_size_id-1)*4, 4, &read_size_ref, NULL);
+			dr_fprintf(f, "[In] ReAllocate size "PFX"\n", read_size_ref);
+		} else if(call_type == CALL_FREE_HEAP){
+			dr_safe_read((app_pc)mc.esp+(buffer_idx-1)*4, 4, &read_buffer, NULL);
+			dr_fprintf(f, "[In] Free address "PFX"\n", read_buffer);
+			
+			app_pc heapHandle;
+			dr_safe_read((app_pc)mc.esp+(buffer_idx-1-2)*4, 4, &heapHandle, NULL);
+			read_size = HeapSize(heapHandle, 0, read_buffer);
+			dr_fprintf(f, "[In] Free size "PFX"\n", read_size);
 		}
 	}
 }
@@ -1544,9 +1197,9 @@ at_return(app_pc instr_addr, app_pc target_addr)
 #else
 	thread_data* data = (thread_data*)drmgr_get_tls_field(drcontext, tls_index);
 #endif
-	int& untrusted_function_calling = data->untrusted_function_calling;
+	api_call_type& call_type = data->call_type;
 
-	if(untrusted_function_calling) 
+	if(call_type) 
 	{
 		if(data->return_address == target_addr)
 		{
@@ -1580,7 +1233,7 @@ at_return(app_pc instr_addr, app_pc target_addr)
     print_address(f, instr_addr, "[RETURN @ ]", func1, MAX_SYM_RESULT);
 	print_address(f, target_addr, "\tInto", func2, MAX_SYM_RESULT);
 
-	if(untrusted_function_calling == 0)
+	if(call_type == CALL_UNDEFINED)
 	{
 		print_function_tables(f, "Leaving\t", funcs);
 		
@@ -1605,9 +1258,9 @@ at_jmp(app_pc instr_addr, app_pc target_addr)
 #else
 	thread_data* data = (thread_data*)drmgr_get_tls_field(drcontext, tls_index);
 #endif
-	int& untrusted_function_calling = data->untrusted_function_calling;
+	api_call_type& call_type = data->call_type;
 
-	if(untrusted_function_calling) return;
+	if(call_type) return;
 
 	file_t f = data->f;
 
@@ -1639,9 +1292,9 @@ at_jmp_ind(app_pc instr_addr, app_pc target_addr)
 #else
 	thread_data* data = (thread_data*)drmgr_get_tls_field(drcontext, tls_index);
 #endif
-	int& untrusted_function_calling = data->untrusted_function_calling;
+	api_call_type& call_type = data->call_type;
 
-	if(untrusted_function_calling) return;
+	if(call_type) return;
 
 	file_t f = data->f;
 	
@@ -1668,9 +1321,9 @@ at_others(app_pc pc)
 #else
 	thread_data* data = (thread_data*)drmgr_get_tls_field(drcontext, tls_index);
 #endif
-	int& untrusted_function_calling = data->untrusted_function_calling;
+	api_call_type& call_type = data->call_type;
 
-	if(untrusted_function_calling) return;
+	if(call_type) return;
 
 	file_t f = data->f;
 
@@ -1701,13 +1354,13 @@ event_basic_block(void *drcontext, void *tag, instrlist_t *bb,
 	}
 
 	//如果没有调用可疑函数，则可以直接跳过白名单
-	if(data->untrusted_function_calling == 0 && within_whitelist((app_pc)tag))
+	if(data->call_type == CALL_UNDEFINED && within_whitelist((app_pc)tag))
 		return DR_EMIT_DEFAULT;
 
 	//正在调用了可疑函数，可以从两个地方获取函数返回结果
 	//1 .在该函数return时候
 	//2. 在basic block开始处检测
-	if(data->untrusted_function_calling)
+	if(data->call_type)
 	{
 		if(data->return_address == (app_pc)tag)
 			taint_seed((app_pc)tag, drcontext, &mc);
@@ -1792,7 +1445,7 @@ event_bb_analysis(void *drcontext, void *tag, instrlist_t *bb,
 	}
 
 	//如果没有调用可疑函数，则可以直接跳过白名单
-	if(data->untrusted_function_calling == 0 && within_whitelist((app_pc)tag))
+	if(data->call_type == CALL_UNDEFINED && within_whitelist((app_pc)tag))
 	{
 		sd->skip = 1;
 		return DR_EMIT_DEFAULT;
@@ -1801,7 +1454,7 @@ event_bb_analysis(void *drcontext, void *tag, instrlist_t *bb,
 	//正在调用了可疑函数，可以从两个地方获取函数返回结果
 	//1 .在该函数return时候
 	//2. 在basic block开始处检测
-	if(data->untrusted_function_calling)
+	if(data->call_type)
 	{
 		if(data->return_address == (app_pc)tag)
 			taint_seed((app_pc)tag, drcontext, &mc);
@@ -1812,8 +1465,14 @@ event_bb_analysis(void *drcontext, void *tag, instrlist_t *bb,
 		}
 	}
 
+	app_pc pc = (app_pc)tag;
 	for (instr = instrlist_first(bb); instr != NULL; instr = instr_get_next(instr))
+	{
+		if(pc != instr_get_app_pc(instr))
+			sd->skip = 1;
 		instr_count++;
+		pc += instr_length(drcontext, instr);
+	}
 	
 	dr_fprintf(f, "\nin dr_basic_block #%d (tag="PFX") esp="PFX" instr_count=%d\n", 
 			block_cnt, tag, mc.esp, instr_count);
@@ -1831,8 +1490,12 @@ event_bb_insert(void *drcontext, void *tag, instrlist_t *bb,
 {
 	shared_data *sd = (shared_data *) user_data;
 	int& insert_count = sd->insert_count;
+	app_pc pc = instr_get_app_pc(instr);
+	//thread_data* data = (thread_data*)drmgr_get_tls_field(drcontext, tls_index);
+	//dr_fprintf(data->f, "(tag="PFX") pc="PFX"\n", tag, pc);
+	//return DR_EMIT_DEFAULT;	
 	
-	if(sd->skip == 1 || insert_count >= MAX_CLEAN_INSTR_COUNT)
+	if(pc == 0 || sd->skip == 1 || insert_count >= MAX_CLEAN_INSTR_COUNT)
 		return DR_EMIT_DEFAULT;
 
 	int opcode = instr_get_opcode(instr);
@@ -1872,16 +1535,64 @@ event_bb_instru2instru(void *drcontext, void *tag, instrlist_t *bb,
 }
 #endif
 
+static void
+module_is_libc(const module_data_t *mod, bool *is_libc, bool *is_libcpp, bool *is_debug)
+{
+    const char *modname = dr_module_preferred_name(mod);
+    *is_debug = false;
+    *is_libc = false;
+    *is_libcpp = false;
+    if (modname != NULL) {
+#ifdef LINUX
+        if (text_matches_pattern(modname, "libc*", false))
+            *is_libc = true;
+#else
+        if (text_matches_pattern(modname, "msvcr*.dll", true/*ignore case*/)) {
+            *is_libc = true;
+            if (text_matches_pattern(modname, "msvcr*d.dll", true/*ignore case*/))
+                *is_debug = true;
+        } else if (text_matches_pattern(modname, "msvcp*.dll", true/*ignore case*/)) {
+            *is_libcpp = true;
+            if (text_matches_pattern(modname, "msvcp*d.dll", true/*ignore case*/))
+                *is_debug = true;
+        }
+#endif
+    }
+}
+
 static void 
 event_module_load(void *drcontext, const module_data_t *info, bool loaded)
 {
-	const char *name;
-    name = dr_module_preferred_name(info);
-	if (name == NULL) name = "";
+	const char *name = dr_module_preferred_name(info);
+	bool search_syms = true;
+	bool is_libc, is_libcpp, is_debug;
+    module_is_libc(info, &is_libc, &is_libcpp, &is_debug);
 
 	dr_fprintf(f_global, "\nmodule load event: \"%s\" "PFX"-"PFX" %s\n",
 		name, info->start, info->end, info->full_path);
 
+	if (name != NULL && 
+		(strcmp(name, DYNAMORIO_LIBNAME) == 0 || strcmp(name, DRMEMORY_LIBNAME) == 0))
+		 search_syms = false;
+
+	if(search_syms){
+		for(int i = 0; i < CALL_RULES_NUM; i++){
+			if(dr_get_main_module()->start == info->start || 
+				text_matches_any_pattern(name, rules[i].modname, true)){
+					app_pc pc = lookup_symbol(info, rules[i].function);
+					if(pc == NULL) continue;
+					
+					call_routine_entry* e = (call_routine_entry *)dr_global_alloc(sizeof(*e));
+					e->pc = pc;
+					e->mod = info;
+					e->modname = _strdup(name);
+					e->function = _strdup(rules[i].function);
+					memcpy(&e->rule, &rules[i], sizeof(rules[i]));
+					hashtable_add(&call_routine_table, (void *)pc, (void *)e);
+					dr_fprintf(f_global, "%s!%s "PFX"\n", name, rules[i].function, pc);
+			}
+		}
+	}
 #ifdef USE_DRMGR
 	replace_module_load(drcontext, info, loaded);
 #endif
@@ -1980,7 +1691,7 @@ dr_init(client_id_t id)
     const char* opstr;
 	module_data_t *data;
 
-	my_id = id;
+	client_id = my_id = id;
 	process_options(opstr = dr_get_options(my_id));
 	appnm = dr_get_application_name();
 	stats_mutex = dr_mutex_create();
@@ -2008,22 +1719,17 @@ dr_init(client_id_t id)
 	dr_fprintf(f_global, "executable \"%s\" is "PFX"-"PFX"\n", app_path, app_base, app_end);
 	dr_fprintf(f_global, "verbose is "PFX"\n", verbose);
 
-	if (drsym_init(IF_WINDOWS_ELSE(NULL, 0)) != DRSYM_SUCCESS) {
-        dr_log(NULL, LOG_ALL, 1, "WARNING: unable to initialize symbol translation\n");
-    }
-
-# ifdef WINDOWS
-    dr_enable_console_printing();
-# endif
-
 #ifdef USE_DRMGR
 	drmgr_init();
 	drwrap_init();
-	replace_init();
-
 	tls_index = drmgr_register_tls_field();
 #endif
-	
+
+	if (drsym_init(IF_WINDOWS_ELSE(NULL, 0)) != DRSYM_SUCCESS) {
+        LOG(1, "WARNING: unable to initialize symbol translation\n");
+    }
+    dr_enable_console_printing();
+
 	dr_register_exit_event(event_exit);
 
 #ifdef USE_DRMGR
@@ -2039,4 +1745,19 @@ dr_init(client_id_t id)
 	dr_register_thread_exit_event(event_thread_exit);
 	dr_register_bb_event(event_basic_block);
 #endif	
+
+	hashtable_init_ex(&call_routine_table, 8, HASH_INTPTR, false/*!str_dup*/, false/*!synch*/,
+					call_routine_entry_free, NULL, NULL);
+
+#ifdef USE_DRMGR
+#ifdef WINDOWS
+	data = dr_lookup_module_by_name("ntdll.dll");
+	if(data)
+	{
+		ntdll_base = data->start;
+		dr_fprintf(f_global, "ntdll_base is "PFX"\n", ntdll_base);
+	}
+#endif
+	replace_init();
+#endif
 }

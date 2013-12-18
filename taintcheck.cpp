@@ -142,8 +142,8 @@ typedef struct thread_data_t
 	int enter_function;
 	int leave_function;
 	
-	memory_list taint_memory;
-	memory_list taint_memory_stack;
+	memory_list tainted_all;	/* 所有被污染的内存，包括堆、栈、静态全局 */
+	memory_list tainted_stack;	/* 所有被污染的栈内存 （其实每个线程都不一样，可以考虑设为全局）*/
 	std::string this_function; 
 	function_tables funcs;
 }thread_data;
@@ -152,6 +152,7 @@ static const char * const build_date = __DATE__ " " __TIME__;
 
 static memory_list skip_list;		/* 白名单模块 */
 static memory_list process_heap;	/* 进程所有的堆空间 */
+static memory_list tainted_heap;	/* 所有被污染的堆空间 */
 static void *stats_mutex;
 static uint num_threads;
 static int tls_index;
@@ -250,6 +251,14 @@ static bool
 within_global_stack(app_pc pc, app_pc stack_bottom, app_pc stack_top)
 {
 	return (pc >= stack_top && pc <= stack_bottom);
+}
+
+static bool
+within_heap(app_pc pc)
+{
+	if(process_heap.size() && process_heap.find(pc))
+		return true;		
+	return false;
 }
 
 #define MAX_OPTION_LEN DR_MAX_OPTIONS_LENGTH
@@ -538,19 +547,21 @@ print_propagation(file_t f, int n1, int n2, instr_t* instr, dr_mcontext_t *mc)
 
 #define LOG_MEMORY_LIST(s, f, m)										\
 	if(verbose&SHOW_SHADOW_MEMORY){										\
+		static char buffer[64] = {0};									\
 		dr_fprintf(f, "%s(%d):", s, m.size());							\
-		for(memory_list::iterator it = m.begin(); it != m.end(); it++)	\
-			dr_fprintf(f, "[0x%x, 0x%x) %s ", it->start, it->end, (char*)it->start);				\
+		for(memory_list::iterator it = m.begin(); it != m.end(); it++){	\
+			memcpy(buffer, (char*)it->start, sizeof(buffer)-1);buffer[sizeof(buffer)-1]=0;	\
+			dr_fprintf(f, "[0x%x, 0x%x) %s ", it->start, it->end, buffer);}		\
 		dr_fprintf(f, "\n");											\
 	}
 
 static bool 
-process_stack_shrink(memory_list& taint_memory, memory_list& stack_memory,
+process_stack_shrink(memory_list& tainted_all, memory_list& tainted_stack,
 					 app_pc stack_top, app_pc current_esp)
 {
-	if(stack_memory.remove(stack_top, current_esp))
+	if(tainted_stack.remove(stack_top, current_esp))
 	{
-		taint_memory.remove(stack_top, current_esp);
+		tainted_all.remove(stack_top, current_esp);
 		return true;
 	}
 	return false;
@@ -628,8 +639,8 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 	app_pc& buffer_addr = data->buffer_addr;
 	int& buffer_size = data->buffer_size;
 	int in_size = data->buffer_size;
-	memory_list& taint_memory = data->taint_memory;
-	memory_list& stack_memory = data->taint_memory_stack;
+	memory_list& tainted_all = data->tainted_all;
+	memory_list& tainted_stack = data->tainted_stack;
 	
 	dr_fprintf(f, "Thread %d: function return status "PFX "\n", data->thread_id, mc->eax);
 	
@@ -643,27 +654,43 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 	if(call_type == CALL_ALLOCATE_HEAP){
 		buffer_addr = (app_pc)mc->eax;
 		range r(buffer_addr, buffer_addr+buffer_size);
-		dr_fprintf(f_global, "Alloc buffer %d:"PFX"-"PFX"\n", buffer_size, r.start, r.end);
+		dr_fprintf(f, "Alloc buffer %d:"PFX"-"PFX"\n", buffer_size, r.start, r.end);
 		process_heap.insert(r);
 		goto exit;
 	} else if(call_type == CALL_FREE_HEAP){
 		if(buffer_addr){
 			range r(buffer_addr, buffer_addr+buffer_size);
 			process_heap.remove(r.start, r.end);
-			dr_fprintf(f_global, "Free buffer %d:"PFX"-"PFX"\n", buffer_size, r.start, r.end);
+			dr_fprintf(f, "Free buffer %d:"PFX"-"PFX"\n", buffer_size, r.start, r.end);
+
+			if(tainted_heap.remove(r.start, r.end))
+			{
+				ELOGF(SHOW_SHADOW_MEMORY, f, "[-] free_buffer [0x%x, 0x%x)\n", r.start, r.end);					
+				LOG_MEMORY_LIST("[-] heap_memory", f, tainted_heap);
+				tainted_all.remove(r.start, r.end);
+				LOG_MEMORY_LIST("[-] global_memory", f, tainted_all);
+			}
 		}
 		goto exit;
 	} else if(call_type == CALL_REALLOCATE_HEAP){
 		if(buffer_addr){
 			range r(buffer_addr, buffer_addr+buffer_size);
 			process_heap.remove(r.start, r.end);
-			dr_fprintf(f_global, "Free buffer %d:"PFX"-"PFX"\n", buffer_size, r.start, r.end);
+			dr_fprintf(f, "Free buffer %d:"PFX"-"PFX"\n", buffer_size, r.start, r.end);
+
+			if(tainted_heap.remove(r.start, r.end))
+			{
+				ELOGF(SHOW_SHADOW_MEMORY, f, "[-] reallocate [0x%x, 0x%x)\n", r.start, r.end);					
+				LOG_MEMORY_LIST("[-] heap_memory", f, tainted_heap);
+				tainted_all.remove(r.start, r.end);
+				LOG_MEMORY_LIST("[-] global_memory", f, tainted_all);
+			}
 		}
 		app_pc new_addr = (app_pc)mc->eax;
 		int new_size = data->new_size;
 		range r(new_addr, new_addr+new_size);
 		process_heap.insert(r);
-		dr_fprintf(f_global, "Alloc buffer %d:"PFX"-"PFX"\n", new_size, r.start, r.end);
+		dr_fprintf(f, "Alloc buffer %d:"PFX"-"PFX"\n", new_size, r.start, r.end);
 		goto exit;
 	}
 
@@ -692,15 +719,20 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 	if(call_type == CALL_TAINTED_NORMAL_BUFFER)//普通的字符串，无需特别处理
 	{
 		range r(buffer_addr, buffer_addr+buffer_size);
-		taint_memory.insert(r);
+		tainted_all.insert(r);
 		dr_fprintf(f, "[Out] Read Size "PFX"\n", buffer_size);
-		LOG_MEMORY_LIST("[+] global_memory", f, taint_memory);
+		ELOGF(SHOW_SHADOW_MEMORY, f, "[+] taint_seed [0x%x, 0x%x)\n", r.start, r.end);
+		LOG_MEMORY_LIST("[+] global_memory", f, tainted_all);
 
 		if(within_global_stack(buffer_addr, data->stack_bottom, (app_pc)mc->esp))
 		{
-			stack_memory.insert(r);
-			ELOGF(SHOW_SHADOW_MEMORY, f, "[+] stack_seed [0x%x, 0x%x)\n", r.start, r.end);
-			LOG_MEMORY_LIST("[+] stack_memory", f, stack_memory);
+			tainted_stack.insert(r);
+			LOG_MEMORY_LIST("[+] stack_memory", f, tainted_stack);
+		}
+		else if(within_heap(buffer_addr))
+		{
+			tainted_heap.insert(r);
+			LOG_MEMORY_LIST("[+] heap_memory", f, tainted_heap);
 		}
 	}
 	else if(call_type == CALL_TAINTED_NETWORK_BUFFER)
@@ -725,15 +757,20 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 			if(in_size == 1 || (in_size == 2 && i > 0))
 			{
 				range r(addr, addr+value);
-				taint_memory.insert(r);
+				tainted_all.insert(r);
 				dr_fprintf(f, "[Out] Taint memory "PFX" %d\n", addr, value);
-				LOG_MEMORY_LIST("[+] global_memory", f, taint_memory);
+				ELOGF(SHOW_SHADOW_MEMORY, f, "[+] taint_seed [0x%x, 0x%x)\n", r.start, r.end);
+				LOG_MEMORY_LIST("[+] global_memory", f, tainted_all);
 
 				if(within_global_stack(addr, data->stack_bottom, (app_pc)mc->esp))
 				{
-					stack_memory.insert(r);
-					ELOGF(SHOW_SHADOW_MEMORY, f, "[+] stack_seed [0x%x, 0x%x)\n", r.start, r.end);
-					LOG_MEMORY_LIST("[+] stack_memory", f, stack_memory);
+					tainted_stack.insert(r);
+					LOG_MEMORY_LIST("[+] stack_memory", f, tainted_stack);
+				}
+				else if(within_heap(addr))
+				{
+					tainted_heap.insert(r);
+					LOG_MEMORY_LIST("[+] heap_memory", f, tainted_heap);
 				}
 			}
 
@@ -753,10 +790,10 @@ taint_alert(instr_t* instr, app_pc target_addr, void* drcontext, dr_mcontext_t *
 	thread_data* data = (thread_data*)drmgr_get_tls_field(drcontext, tls_index);
 #endif
 	reg_status* taint_regs = data->taint_regs;
-	memory_list& taint_memory = data->taint_memory;
+	memory_list& tainted_all = data->tainted_all;
 
 	//没有污染源，安全的
-	if(taint_memory.size() == 0 && is_tags_clean(taint_regs))
+	if(tainted_all.size() == 0 && is_tags_clean(taint_regs))
 		return false;
 
 	int num = instr_num_srcs(instr);
@@ -781,14 +818,14 @@ taint_alert(instr_t* instr, app_pc target_addr, void* drcontext, dr_mcontext_t *
 			break;
 		}
 		else if(opnd_is_memory_reference(src_opnd) &&
-			taint_memory.find(taint_addr = opnd_compute_address(src_opnd, mc)))
+			tainted_all.find(taint_addr = opnd_compute_address(src_opnd, mc)))
 		{
 			is_taint = true;
 			type = 1;
 			break;
 		}
 		else if(opnd_is_pc(src_opnd) && 
-			taint_memory.find(taint_addr = opnd_get_pc(src_opnd)))
+			tainted_all.find(taint_addr = opnd_get_pc(src_opnd)))
 		{
 			is_taint = true;
 			type = 1;
@@ -851,8 +888,8 @@ taint_propagation(app_pc pc)
 
 	file_t f = data->f;
 	reg_status* taint_regs = data->taint_regs;
-	memory_list& taint_memory = data->taint_memory;
-	memory_list& stack_memory = data->taint_memory_stack;
+	memory_list& tainted_all = data->tainted_all;
+	memory_list& tainted_stack = data->tainted_stack;
 	
     dr_mcontext_t mc = {sizeof(mc),DR_MC_ALL};
     dr_get_mcontext(drcontext, &mc);
@@ -874,7 +911,7 @@ taint_propagation(app_pc pc)
 			app_pc top = (app_pc)mc.esp - opnd_get_immed_int(opnd2);
 			if(top < data->stack_top)	data->stack_top = top;
 		}
-	} else if(taint_memory.size() == 0 && is_tags_clean(taint_regs)){
+	} else if(tainted_all.size() == 0 && is_tags_clean(taint_regs)){
 		//没有污染源，直接跳过
 		goto exit0;
 	} else if(opc_is_pop(opcode)){
@@ -891,7 +928,7 @@ taint_propagation(app_pc pc)
 		size_t size;
 		dr_safe_read((void *)mc.esp, 4, &value, &size);
 	
-		if(taint_memory.find(value))
+		if(tainted_all.find(value))
 			taint_regs[reg] = value == 0 ? 1 : (reg_status)value;
 		else
 		{
@@ -917,13 +954,12 @@ taint_propagation(app_pc pc)
 		if(opnd_is_reg(src_opnd=instr_get_src(&instr,0)) && opnd_get_reg(src_opnd)==DR_REG_EBP && 
 			opnd_is_reg(dst_opnd=instr_get_dst(&instr,0)) && opnd_get_reg(dst_opnd)==DR_REG_ESP){
 shrink:
-			if(process_stack_shrink(taint_memory, stack_memory, data->stack_top, (app_pc)mc.ebp+4))
+			if(process_stack_shrink(tainted_all, tainted_stack, data->stack_top, (app_pc)mc.ebp+4))
 				ELOGF(SHOW_SHADOW_MEMORY, f, "[-] taint_propagation [0x%x, 0x%x)\n", (app_pc)mc.esp, (app_pc)mc.ebp);					
 			
 			app_pc top = (app_pc)mc.ebp+4;
 			if(top < data->stack_top)	data->stack_top = top;
-			LOG_MEMORY_LIST("[-] global_memory", f, taint_memory);
-			LOG_MEMORY_LIST("[-] stack_memory", f, stack_memory);
+			LOG_MEMORY_LIST("[-] global_memory", f, tainted_all);
 			goto exit0;
 		}
 	}
@@ -955,8 +991,8 @@ propagation:
 				taint_addr = opnd_compute_address(src_opnd, &mc);
 				app_pc mem_addr;
 				dr_safe_read(taint_addr, 4, &mem_addr, NULL);
-				if(taint_memory.find(taint_addr) || 
-					(opc_is_move(opcode) && opcode != OP_lea && taint_memory.find(taint_addr=mem_addr)))
+				if(tainted_all.find(taint_addr) || 
+					(opc_is_move(opcode) && opcode != OP_lea && tainted_all.find(taint_addr=mem_addr)))
 				{
 					src_tainted = true;
 					type = 1;
@@ -964,7 +1000,7 @@ propagation:
 				}
 			}
 			else if(opnd_is_pc(src_opnd) && 
-				taint_memory.find(taint_addr = opnd_get_pc(src_opnd)))
+				tainted_all.find(taint_addr = opnd_get_pc(src_opnd)))
 			{
 				src_tainted = true;
 				type = 2;
@@ -1003,14 +1039,19 @@ dest:
 				{
 					tainting_addr = opnd_compute_address(dst_opnd, &mc);
 					range r(tainting_addr, tainting_addr+taint_size);
-					taint_memory.insert(r);
-					LOG_MEMORY_LIST("[+] global_memory", f, taint_memory);
+					tainted_all.insert(r);
+					ELOGF(SHOW_SHADOW_MEMORY, f, "[+] taint_propagation [0x%x, 0x%x)\n", r.start, r.end);					
+					LOG_MEMORY_LIST("[+] global_memory", f, tainted_all);
 					
 					if(within_global_stack(tainting_addr, data->stack_bottom, (app_pc)mc.esp))
 					{
-						stack_memory.insert(r);
-						ELOGF(SHOW_SHADOW_MEMORY, f, "[+] taint_propagation [0x%x, 0x%x)\n", r.start, r.end);					
-						LOG_MEMORY_LIST("[+] stack_memory", f, stack_memory);
+						tainted_stack.insert(r);
+						LOG_MEMORY_LIST("[+] stack_memory", f, tainted_stack);
+					}
+					else if(within_heap(tainting_addr))
+					{
+						tainted_heap.insert(r);
+						LOG_MEMORY_LIST("[+] heap_memory", f, tainted_heap);
 					}
 				}
 			}
@@ -1020,14 +1061,19 @@ dest:
 			{
 				tainting_addr = opnd_get_pc(dst_opnd);
 				range r(tainting_addr, tainting_addr+taint_size);
-				taint_memory.insert(r);
-				LOG_MEMORY_LIST("[+] global_memory", f, taint_memory);
+				tainted_all.insert(r);
+				ELOGF(SHOW_SHADOW_MEMORY, f, "[+] taint_propagation [0x%x, 0x%x)\n", r.start, r.end);					
+				LOG_MEMORY_LIST("[+] global_memory", f, tainted_all);
 				
 				if(within_global_stack(tainting_addr, data->stack_bottom, (app_pc)mc.esp))
 				{
-					stack_memory.insert(r);
-					ELOGF(SHOW_SHADOW_MEMORY, f, "[+] taint_propagation [0x%x, 0x%x)\n", r.start, r.end);					
-					LOG_MEMORY_LIST("[+] stack_memory", f, stack_memory);
+					tainted_stack.insert(r);
+					LOG_MEMORY_LIST("[+] stack_memory", f, tainted_stack);
+				}
+				else if(within_heap(tainting_addr))
+				{
+					tainted_heap.insert(r);
+					LOG_MEMORY_LIST("[+] heap_memory", f, tainted_heap);
 				}
 			}
 
@@ -1057,13 +1103,15 @@ dest:
 			else if(opnd_is_memory_reference(dst_opnd))
 			{
 				app_pc addr = opnd_compute_address(dst_opnd, &mc);
-				if(taint_memory.remove(addr, addr+taint_size))
+				if(tainted_all.remove(addr, addr+taint_size))
 				{
 					ELOGF(SHOW_SHADOW_MEMORY, f, "[-] taint_propagation [0x%x, 0x%x)\n", addr, addr+taint_size);					
-					LOG_MEMORY_LIST("[-] global_memory", f, taint_memory);
+					LOG_MEMORY_LIST("[-] global_memory", f, tainted_all);
 				}
-				if(stack_memory.remove(addr, addr+taint_size))
-					LOG_MEMORY_LIST("[-] stack_memory", f, stack_memory);
+				if(tainted_stack.remove(addr, addr+taint_size))
+					LOG_MEMORY_LIST("[-] stack_memory", f, tainted_stack);
+				if(tainted_heap.remove(addr, addr+taint_size))
+					LOG_MEMORY_LIST("[-] heap_memory", f, tainted_heap);
 			}
 		}
 		if(++nn < n2) goto dest;
@@ -1220,8 +1268,8 @@ at_return(app_pc instr_addr, app_pc target_addr)
 
 	file_t f = data->f;
 	function_tables& funcs = data->funcs;
-	memory_list& taint_memory = data->taint_memory;
-	memory_list& stack_memory = data->taint_memory_stack;
+	memory_list& tainted_all = data->tainted_all;
+	memory_list& tainted_stack = data->tainted_stack;
 	dr_mcontext_t mc = {sizeof(mc),DR_MC_ALL};
 	dr_get_mcontext(drcontext, &mc);
 
@@ -1229,12 +1277,12 @@ at_return(app_pc instr_addr, app_pc target_addr)
 	print_instr(drcontext, f, &instr, instr_addr);
 	CONSTRUCT_INSTR_END(drcontext);
 		
-	if(process_stack_shrink(taint_memory, stack_memory, data->stack_top, (app_pc)mc.esp))
+	if(process_stack_shrink(tainted_all, tainted_stack, data->stack_top, (app_pc)mc.esp))
 	{
 		ELOGF(SHOW_SHADOW_MEMORY, f, "[-] at_return "PFX"-"PFX"\n", data->stack_top, (app_pc)mc.esp);
 
-		LOG_MEMORY_LIST("[-] global_memory", f, taint_memory);
-		LOG_MEMORY_LIST("[-] stack_memory", f, stack_memory);
+		LOG_MEMORY_LIST("[-] global_memory", f, tainted_all);
+		LOG_MEMORY_LIST("[-] tainted_stack", f, tainted_stack);
 	}
 
 	char modname1[MAX_SYM_RESULT], func1[MAX_SYM_RESULT];
@@ -1243,7 +1291,7 @@ at_return(app_pc instr_addr, app_pc target_addr)
 	int t2 = lookup_symbols_by_pc(target_addr, modname2, func2, MAX_SYM_RESULT);
 	DOLOG(SHOW_SYM,
 		if(t1 < 0)	dr_fprintf(f, "[RETURN @ ] "PFX" unknown ??:0\n", instr_addr);
-		else if(t1 > 0) dr_fprintf(f, "[CALL @ ] "PFX" %s:!%s\n", instr_addr, modname1, func1);
+		else if(t1 > 0) dr_fprintf(f, "[RETURN @ ] "PFX" %s:!%s\n", instr_addr, modname1, func1);
 		else dr_fprintf(f, "[RETURN @ ] "PFX" %s:!??\n", instr_addr, modname1);
 
 		if(t2 < 0)	dr_fprintf(f, "\tInto "PFX" unknown ??:0\n", target_addr);
@@ -1707,8 +1755,8 @@ event_thread_exit(void *drcontext)
 #endif
 	file_t f = data->f;
 
-	for(memory_list::iterator it = data->taint_memory.begin();
-		it != data->taint_memory.end(); it++)
+	for(memory_list::iterator it = data->tainted_all.begin();
+		it != data->tainted_all.end(); it++)
 		dr_fprintf(f, PFX"-"PFX" Size:%d\n", it->start, it->end, it->end-it->start);
 
 	dr_fprintf(f, "---- log end for thread %d ----\n", data->thread_id);

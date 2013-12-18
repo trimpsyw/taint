@@ -132,7 +132,6 @@ typedef struct thread_data_t
 	api_call_type call_type;	/* 函数调用类型 */
 	app_pc call_address, into_address, return_address;
 	int buffer_idx;				/* 索引：缓冲区*/
-	int char_buffer;			/* 是否为普通字符串 */
 	int size_id;				/* 索引：In Buffer的大小 */
 	int read_size_id;			/* 索引：Out Buffer的大小 */
 	int read_size_ref;			/* 是否为指针 */
@@ -384,50 +383,43 @@ print_instr(void* drcontext, file_t f, instr_t* instr, app_pc pc)
 	});
 }
 
-# define MAX_SYM_RESULT 256
-static int
-print_address(file_t f, app_pc addr, const char *prefix, char* function = NULL, int size = 0)
+#define MAX_SYM_RESULT 256
+static int 
+lookup_symbols_by_pc(app_pc addr, char* module, char* function, int size, size_t* modoff = NULL)
 {
-    drsym_info_t sym;
-    char name[MAX_SYM_RESULT];
+	module_data_t *data = dr_lookup_module(addr);
+    if (data == NULL) 
+	{
+		strcpy(module, "<nomodule>");
+		sprintf(function, "<noname>", addr); 
+		return -1;
+	}
+
+	drsym_info_t sym;
     char file[MAXIMUM_PATH];
-	module_data_t *data;
-	function = (function == NULL) ? name : function;
-	size = (size == 0) ? MAX_SYM_RESULT : size;
-
-    data = dr_lookup_module(addr);
-    if (data == NULL) {
-		if(verbose & SHOW_SYM)
-			dr_fprintf(f, "%s "PFX" unknown ??:0\n", prefix, addr);
-
-		strcpy(function, "unknown");
-        return 0;
-    }
-    sym.struct_size = sizeof(sym);
+	sym.struct_size = sizeof(sym);
     sym.name = function;
     sym.name_size = size;
     sym.file = file;
     sym.file_size = MAXIMUM_PATH;
 
-	drsym_error_t symres;
-    symres = drsym_lookup_address(data->full_path, addr - data->start, &sym,
-                                DRSYM_DEFAULT_FLAGS);
-
-    const char *modname = dr_module_preferred_name(data);
+	const char *modname = dr_module_preferred_name(data);
     if (modname == NULL)
-        modname = "<noname>";
-    
+        modname = "<noname>";	
+	
+	drsym_error_t symres = drsym_lookup_address(data->full_path, addr - data->start, 
+							&sym, DRSYM_DEFAULT_FLAGS);
 	if (symres == DRSYM_SUCCESS || symres == DRSYM_ERROR_LINE_NOT_AVAILABLE) {
-		DOLOG(SHOW_SYM,
-			dr_fprintf(f, "%s "PFX" %s:%s\n", prefix, addr, modname, sym.name););
+		strncpy(module, modname, size);
+		strncpy(function, sym.name, size);
+		dr_free_module_data(data);
+		return 1;
 	} else {
-		sprintf(function, "%x", addr);
-		DOLOG(SHOW_SYM,
-			dr_fprintf(f, "%s "PFX" %s:%s\n", prefix, addr, modname, function););
+		strncpy(module, modname, size);
+		sprintf(function, "%x", addr); 
+		dr_free_module_data(data);
+		return 0;
 	}
-
-    dr_free_module_data(data);
-	return 1;
 }
 
 static int lookup_syms(app_pc addr, char* module, char *function, int size)
@@ -642,7 +634,6 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 	int& read_size_id = data->read_size_id;
 	int& read_size_ref = data->read_size_ref;
 	int& return_status = data->succeed_return_status;
-	int& char_buffer = data->char_buffer;
 	app_pc& read_size_offset = data->read_size_offset;
 	app_pc& read_buffer = data->read_buffer;
 	int& read_size = data->read_size;
@@ -1093,7 +1084,6 @@ at_call(app_pc instr_addr, app_pc target_addr)
 	app_pc& call_address = data->call_address;
 	app_pc& return_address = data->return_address;
 	int& buffer_idx = data->buffer_idx;
-	int& char_buffer = data->char_buffer;
 	int& size_id = data->size_id;
 	int& read_size_id = data->read_size_id;
 	int& read_size_ref = data->read_size_ref;
@@ -1116,12 +1106,19 @@ at_call(app_pc instr_addr, app_pc target_addr)
 	
 	CONSTRUCT_INSTR_END(drcontext);
     
-	print_address(f, instr_addr, "[CALL @ ]");
-	print_address(f, target_addr, "\tInto");
+	char modname1[MAX_SYM_RESULT], func1[MAX_SYM_RESULT];
+	char modname2[MAX_SYM_RESULT], func2[MAX_SYM_RESULT];
+	int t1 = lookup_symbols_by_pc(instr_addr, modname1, func1, MAX_SYM_RESULT);
+	int t2 = lookup_symbols_by_pc(target_addr, modname2, func2, MAX_SYM_RESULT);
+	DOLOG(SHOW_SYM,
+		if(t1 < 0)	dr_fprintf(f, "[CALL @ ] "PFX" unknown ??:0\n", instr_addr);
+		else if(t1 > 0) dr_fprintf(f, "[CALL @ ] "PFX" %s:!%s\n", instr_addr, modname1, func1);
+		else dr_fprintf(f, "[CALL @ ] "PFX" %s:!??\n", instr_addr, modname1);
 
-	//char mod[MAX_SYM_RESULT], func1[MAX_SYM_RESULT], func2[MAX_SYM_RESULT];
-	//lookup_syms(instr_addr, mod, func1, MAX_SYM_RESULT);
-	//lookup_syms(target_addr, mod, func2, MAX_SYM_RESULT);
+		if(t2 < 0)	dr_fprintf(f, "\tInto "PFX" unknown ??:0\n", target_addr);
+		else if(t2 > 0) dr_fprintf(f, "\tInto "PFX" %s:!%s\n", target_addr, modname2, func2);
+		else dr_fprintf(f, "\tInto "PFX" %s:!??\n", target_addr, modname2);
+		);
 
 	call_address = instr_addr;
 	return_address = instr_addr + length;
@@ -1135,7 +1132,6 @@ at_call(app_pc instr_addr, app_pc target_addr)
 			call_address = instr_addr;
 			return_address = instr_addr + length;
 			buffer_idx = e->rule.buffer_id;
-			char_buffer = e->rule.buffer_is_char;
 			size_id = e->rule.size_id;
 			read_size_id = e->rule.read_size_id;
 			read_size_ref = e->rule.read_size_is_reference;
@@ -1229,9 +1225,20 @@ at_return(app_pc instr_addr, app_pc target_addr)
 		LOG_MEMORY_LIST("[-] stack_memory", f, stack_memory);
 	}
 
-	char func1[MAX_SYM_RESULT], func2[MAX_SYM_RESULT];
-    print_address(f, instr_addr, "[RETURN @ ]", func1, MAX_SYM_RESULT);
-	print_address(f, target_addr, "\tInto", func2, MAX_SYM_RESULT);
+	char modname1[MAX_SYM_RESULT], func1[MAX_SYM_RESULT];
+	char modname2[MAX_SYM_RESULT], func2[MAX_SYM_RESULT];
+	int t1 = lookup_symbols_by_pc(instr_addr, modname1, func1, MAX_SYM_RESULT);
+	int t2 = lookup_symbols_by_pc(target_addr, modname2, func2, MAX_SYM_RESULT);
+	DOLOG(SHOW_SYM,
+		if(t1 < 0)	dr_fprintf(f, "[RETURN @ ] "PFX" unknown ??:0\n", instr_addr);
+		else if(t1 > 0) dr_fprintf(f, "[CALL @ ] "PFX" %s:!%s\n", instr_addr, modname1, func1);
+		else dr_fprintf(f, "[RETURN @ ] "PFX" %s:!??\n", instr_addr, modname1);
+
+		if(t2 < 0)	dr_fprintf(f, "\tInto "PFX" unknown ??:0\n", target_addr);
+		else if(t2 > 0) dr_fprintf(f, "\tInto "PFX" %s:!%s\n", target_addr, modname2, func2);
+		else dr_fprintf(f, "\tInto "PFX" %s:!??\n", target_addr, modname2);
+		);
+
 
 	if(call_type == CALL_UNDEFINED)
 	{
@@ -1268,9 +1275,20 @@ at_jmp(app_pc instr_addr, app_pc target_addr)
 	print_instr(drcontext, f, &instr, instr_addr);
 	CONSTRUCT_INSTR_END(drcontext);
 
-	char func1[MAX_SYM_RESULT], func2[MAX_SYM_RESULT];
-    print_address(f, instr_addr, "JMP @ ", func1, MAX_SYM_RESULT);
-    print_address(f, target_addr, "\tInto ", func2, MAX_SYM_RESULT);
+	char modname1[MAX_SYM_RESULT], func1[MAX_SYM_RESULT];
+	char modname2[MAX_SYM_RESULT], func2[MAX_SYM_RESULT];
+	int t1 = lookup_symbols_by_pc(instr_addr, modname1, func1, MAX_SYM_RESULT);
+	int t2 = lookup_symbols_by_pc(target_addr, modname2, func2, MAX_SYM_RESULT);
+
+	DOLOG(SHOW_SYM,
+		if(t1 < 0)	dr_fprintf(f, "[JMP @ ] "PFX" unknown ??:0\n", instr_addr);
+		else if(t1 > 0) dr_fprintf(f, "[JMP @ ] "PFX" %s:!%s\n", instr_addr, modname1, func1);
+		else dr_fprintf(f, "[JMP @ ] "PFX" %s:!??\n", instr_addr, modname1);
+
+		if(t2 < 0)	dr_fprintf(f, "\tInto "PFX" unknown ??:0\n", target_addr);
+		else if(t2 > 0) dr_fprintf(f, "\tInto "PFX" %s:!%s\n", target_addr, modname2, func2);
+		else dr_fprintf(f, "\tInto "PFX" %s:!??\n", target_addr, modname2);
+		);
 
 	//if(skip_list.at(instr_addr) == skip_list.at(target_addr))
 	{
@@ -1302,8 +1320,19 @@ at_jmp_ind(app_pc instr_addr, app_pc target_addr)
 	print_instr(drcontext, f, &instr, instr_addr);
 	CONSTRUCT_INSTR_END(drcontext);
 
-	print_address(f, instr_addr, "JMP Ind @ ");
-    print_address(f, target_addr, "\tInto ");
+	char modname1[MAX_SYM_RESULT], func1[MAX_SYM_RESULT];
+	char modname2[MAX_SYM_RESULT], func2[MAX_SYM_RESULT];
+	int t1 = lookup_symbols_by_pc(instr_addr, modname1, func1, MAX_SYM_RESULT);
+	int t2 = lookup_symbols_by_pc(target_addr, modname2, func2, MAX_SYM_RESULT);
+	DOLOG(SHOW_SYM,
+		if(t1 < 0)	dr_fprintf(f, "[JMPInd @ ] "PFX" unknown ??:0\n", instr_addr);
+		else if(t1 > 0) dr_fprintf(f, "[JMPInd @ ] "PFX" %s:!%s\n", instr_addr, modname1, func1);
+		else dr_fprintf(f, "[JMPInd @ ] "PFX" %s:!??\n", instr_addr, modname1);
+
+		if(t2 < 0)	dr_fprintf(f, "\tInto "PFX" unknown ??:0\n", target_addr);
+		else if(t2 > 0) dr_fprintf(f, "\tInto "PFX" %s:!%s\n", target_addr, modname2, func2);
+		else dr_fprintf(f, "\tInto "PFX" %s:!??\n", target_addr, modname2);
+		);
 	
 	if(within_whitelist(target_addr)|| data->return_address == target_addr) 
 	{

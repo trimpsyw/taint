@@ -26,7 +26,6 @@
 
 #include "dr_api.h"
 #include "drmgr.h"
-#include "callstack.h"
 #include "utils.h"
 #ifdef USE_DRSYMS
 # include "drsyms.h"
@@ -809,6 +808,7 @@ get_process_heap_handle(void)
     return (HANDLE) get_app_PEB()->ProcessHeap;
 }
 
+#ifdef HAS_DRSYS
 bool
 is_current_process(HANDLE h)
 {
@@ -816,6 +816,7 @@ is_current_process(HANDLE h)
     /* if it fails, assume NOT cur process since usually would use NT_CURRENT_PROCESS */
     return (drsys_handle_is_current_process(h, &res) == DRMF_SUCCESS && res);
 }
+#endif
 
 bool
 is_wow64_process(void)
@@ -838,6 +839,7 @@ get_app_commandline(void)
     return L"";
 }
 
+#ifdef HAS_DRSYS
 int
 sysnum_from_name(const char *name)
 {
@@ -850,6 +852,7 @@ sysnum_from_name(const char *name)
     }
     return -1;
 }
+#endif
 
 static void
 init_os_version(void)
@@ -941,6 +944,7 @@ get_job_object_pids(HANDLE job, JOBOBJECT_BASIC_PROCESS_ID_LIST *list, size_t li
 }
 #endif /* WINDOWS */
 
+#ifdef HAS_DRSYS
 reg_t
 syscall_get_param(void *drcontext, uint num)
 {
@@ -951,6 +955,7 @@ syscall_get_param(void *drcontext, uint num)
     }
     return res;
 }
+#endif
 
 /***************************************************************************
  * HEAP WITH STATS

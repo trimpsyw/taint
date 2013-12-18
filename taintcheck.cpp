@@ -752,9 +752,12 @@ taint_alert(instr_t* instr, app_pc target_addr, void* drcontext, dr_mcontext_t *
 #else
 	thread_data* data = (thread_data*)drmgr_get_tls_field(drcontext, tls_index);
 #endif
-	file_t f = data->f;
 	reg_status* taint_regs = data->taint_regs;
 	memory_list& taint_memory = data->taint_memory;
+
+	//没有污染源，安全的
+	if(taint_memory.size() == 0 && is_tags_clean(taint_regs))
+		return false;
 
 	int num = instr_num_srcs(instr);
 	reg_t taint_reg = 0;
@@ -793,6 +796,7 @@ taint_alert(instr_t* instr, app_pc target_addr, void* drcontext, dr_mcontext_t *
 		}
 	}
 
+	file_t f = data->f;
 	if(is_taint)
 	{
 		char msg[512];

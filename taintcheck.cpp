@@ -78,36 +78,35 @@ struct api_call_rule_t
 	char modname[64];				/* 模块名 */
 	char function[64];				/* 函数名 */
 	
-	int param_count:16;				/* 函数参数总个数 */
+	byte param_count;				/* 函数参数总个数 */
 	
-	int buffer_id:8;				/* 参数索引从1开始计数，0代表返回值 */
-	int buffer_is_char:8;			/* 是否为普通char数组 */
+	byte buffer_id;					/* 参数索引从1开始计数，0代表返回值 */
 	
-	int size_id:8;					/* In buffer大小 */
-	int size_is_reference:8;		/* 是否为指针 */
+	byte in_size_idx;				/* In buffer大小 */
+	byte in_size_is_ref;			/* 是否为指针 */
 
-	int read_size_id:8;				/* 返回buffer的大小， 0表示在返回值*/
-	int read_size_is_reference:8;	/* 是否为指针 */
+	byte out_size_idx;				/* 返回buffer的大小， 0表示在返回值*/
+	byte out_size_is_ref;			/* 是否为指针 */
 
-	int succeed_return_status;		/* 函数调用成功返回0还是非0*/ 
+	byte succeed_status;			/* 函数调用成功返回0还是非0*/ 
 
 	api_call_type call_type;		/* 函数调用类型 */
 
 }rules[] = {
-	{"MSVC*.dll",		"fgets",			3, 1, 1, 2, 0, -1, 0, 1, CALL_TAINTED_NORMAL_BUFFER},
-	{"Kernel32.dll",	"ReadFile",			5, 2, 1, 3, 0, 4,	1, 1, CALL_TAINTED_NORMAL_BUFFER},
-	{"MSVC*.dll",		"fread",			4, 1, 1, 2, 0, -1, 0, 1, CALL_TAINTED_NORMAL_BUFFER},
-	{"ws2_32.dll",		"WSARecvFrom",		9, 2, 0, 3, 0, 4, 1, 0, CALL_TAINTED_NETWORK_BUFFER},
-	{"ws2_32.dll",		"WSARecv",			7, 2, 0, 3, 0, 4, 1, 0, CALL_TAINTED_NETWORK_BUFFER},
-	{"ws2_32.dll",		"recvfrom",			4, 2, 1, 3, 0, 0, 0, 1, CALL_TAINTED_NORMAL_BUFFER},
-	{"ws2_32.dll",		"recv",				4, 2, 1, 3, 0, 0, 0, 1, CALL_TAINTED_NORMAL_BUFFER},
-	{"wsock32.dll",		"recvfrom",			4, 2, 1, 3, 0, 0, 0, 1, CALL_TAINTED_NORMAL_BUFFER},
-	{"wsock32.dll",		"recv",				4, 2, 1, 3, 0, 0, 0, 1, CALL_TAINTED_NORMAL_BUFFER},
-	{"ntdll.dll",		"RtlAllocateHeap",	3, 0, 1, 3, 0, -1, 0, 1, CALL_ALLOCATE_HEAP},
+	{"MSVC*.dll",		"fgets",			3, 1, 2, 0, -1, 0, 1, CALL_TAINTED_NORMAL_BUFFER},
+	{"Kernel32.dll",	"ReadFile",			5, 2, 3, 0, 4,	1, 1, CALL_TAINTED_NORMAL_BUFFER},
+	{"MSVC*.dll",		"fread",			4, 1, 2, 0, -1, 0, 1, CALL_TAINTED_NORMAL_BUFFER},
+	{"ws2_32.dll",		"WSARecvFrom",		9, 2, 3, 0, 4, 1, 0, CALL_TAINTED_NETWORK_BUFFER},
+	{"ws2_32.dll",		"WSARecv",			7, 2, 3, 0, 4, 1, 0, CALL_TAINTED_NETWORK_BUFFER},
+	{"ws2_32.dll",		"recvfrom",			4, 2, 3, 0, 0, 0, 1, CALL_TAINTED_NORMAL_BUFFER},
+	{"ws2_32.dll",		"recv",				4, 2, 3, 0, 0, 0, 1, CALL_TAINTED_NORMAL_BUFFER},
+	{"wsock32.dll",		"recvfrom",			4, 2, 3, 0, 0, 0, 1, CALL_TAINTED_NORMAL_BUFFER},
+	{"wsock32.dll",		"recv",				4, 2, 3, 0, 0, 0, 1, CALL_TAINTED_NORMAL_BUFFER},
+	{"ntdll.dll",		"RtlAllocateHeap",	3, 0, 3, 0, -1, 0, 1, CALL_ALLOCATE_HEAP},
 	/* BOOLEAN RtlFreeHeap(PVOID HeapHandle, ULONG Flags, PVOID HeapBase);*/
-	{"ntdll.dll",		"RtlFreeHeap",		3, 3, 1, -1, 0, -1, 0, 1, CALL_FREE_HEAP},
+	{"ntdll.dll",		"RtlFreeHeap",		3, 3, -1, 0, -1, 0, 1, CALL_FREE_HEAP},
 	/* RtlReAllocateHeap(PVOID HeapHandle, ULONG Flags, PVOID MemoryPointer, ULONG Size );*/
-	{"ntdll.dll",		"RtlReAllocateHeap",4, 3, 1, -1, 0, 4, 0, 1, CALL_REALLOCATE_HEAP},
+	{"ntdll.dll",		"RtlReAllocateHeap",4, 3, -1, 0, 4, 0, 1, CALL_REALLOCATE_HEAP},
 };
 
 #define CALL_RULES_NUM sizeof(rules)/sizeof(rules[0])
@@ -131,14 +130,17 @@ typedef struct thread_data_t
 	int thread_id;				/* 线程ID */
 	api_call_type call_type;	/* 函数调用类型 */
 	app_pc call_address, into_address, return_address;
-	int buffer_idx;				/* 索引：缓冲区*/
-	int size_id;				/* 索引：In Buffer的大小 */
-	int read_size_id;			/* 索引：Out Buffer的大小 */
-	int read_size_ref;			/* 是否为指针 */
-	int succeed_return_status;	/* 调用返回0/非0*/
-	app_pc read_size_offset;	/* 相对于esp的偏移量 */
-	app_pc read_buffer;			/* 最终的缓冲区地址 */
-	int read_size;				/* 最终的缓冲区大小 */
+	byte buffer_idx;			/* 索引：缓冲区*/
+	byte in_size_idx;			/* 索引：In Buffer的大小 */
+	byte out_size_idx;			/* 索引：Out Buffer的大小 */
+	byte out_size_ref;			/* 是否为指针 */
+	byte succeed_status;		/* 调用返回0/非0*/
+	union{
+		app_pc out_size_addr;	/* 指定Out Buffer的大小 */
+		int new_size;			/* */
+	};
+	app_pc buffer_addr;			/* 最终的缓冲区地址 */
+	int buffer_size;			/* 最终的缓冲区大小 */
 	int instr_count;			/* 指令块计数 */
 	app_pc stack_bottom;		/* 栈底部 */
 	app_pc stack_top;			/* 栈顶最小值 (stack_bottom > stack_top)*/
@@ -183,7 +185,7 @@ show_mask_t verbose;
 #undef DOLOG
 # define DOLOG(mask, stmt)  do {	\
     if (verbose & (mask))			\
-        stmt                        \
+	{stmt}                        \
 } while (0)
 
 
@@ -631,13 +633,13 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 		return;
 
 	file_t f = data->f;
-	int& read_size_id = data->read_size_id;
-	int& read_size_ref = data->read_size_ref;
-	int& return_status = data->succeed_return_status;
-	app_pc& read_size_offset = data->read_size_offset;
-	app_pc& read_buffer = data->read_buffer;
-	int& read_size = data->read_size;
-	int in_size = data->read_size;
+	byte& out_size_idx = data->out_size_idx;
+	byte& out_size_ref = data->out_size_ref;
+	byte& return_status = data->succeed_status;
+	app_pc& out_size_addr = data->out_size_addr;
+	app_pc& buffer_addr = data->buffer_addr;
+	int& buffer_size = data->buffer_size;
+	int in_size = data->buffer_size;
 	memory_list& taint_memory = data->taint_memory;
 	memory_list& stack_memory = data->taint_memory_stack;
 	
@@ -651,50 +653,52 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 	}
 
 	if(call_type == CALL_ALLOCATE_HEAP){
-		read_buffer = (app_pc)mc->eax;
-		dr_fprintf(f_global, "Alloc buffer %d:"PFX"-"PFX"\n", read_size, read_buffer, read_buffer+read_size);
+		buffer_addr = (app_pc)mc->eax;
+		dr_fprintf(f_global, "Alloc buffer %d:"PFX"-"PFX"\n", buffer_size, buffer_addr, buffer_addr+buffer_size);
 		goto exit;
 	} else if(call_type == CALL_FREE_HEAP){
-		dr_fprintf(f_global, "Free buffer %d:"PFX"-"PFX"\n", read_size, read_buffer, read_buffer+read_size);
+		if(buffer_addr)
+			dr_fprintf(f_global, "Free buffer %d:"PFX"-"PFX"\n", buffer_size, buffer_addr, buffer_addr+buffer_size);
 		goto exit;
 	} else if(call_type == CALL_REALLOCATE_HEAP){
-		dr_fprintf(f_global, "Free buffer %d:"PFX"-"PFX"\n", read_size, read_buffer, read_buffer+read_size);
+		if(buffer_addr)
+			dr_fprintf(f_global, "Free buffer %d:"PFX"-"PFX"\n", buffer_size, buffer_addr, buffer_addr+buffer_size);
 		app_pc new_addr = (app_pc)mc->eax;
-		dr_fprintf(f_global, "Alloc buffer %d:"PFX"-"PFX"\n", read_size_ref, new_addr, new_addr+read_size_ref);
+		int new_size = data->new_size;
+		dr_fprintf(f_global, "Alloc buffer %d:"PFX"-"PFX"\n", new_size, new_addr, new_addr+new_size);
 		goto exit;
 	}
 
 	int value;
-	size_t size;
-		
-	if(read_size_id >= 0)
+	if(out_size_idx >= 0)
 	{
-		if(read_size_id == 0)
+		//Out buffer大小一般从返回值或者传指针的形参获取
+		if(out_size_idx == 0)
 			value = mc->eax;
 		else
-			dr_safe_read(read_size_offset, 4, &value, &size);
+			value = (uint)data->out_size_addr;
 
-		if(read_size_ref)
-			dr_safe_read((void *)value, 4, &value, &size);
+		if(out_size_ref && value)
+			dr_safe_read((void *)value, 4, &value, NULL);
 
-		read_size = value;
+		buffer_size = value;
 	}
 	else
 	{
 		//对于向fgets之类的函数，直接strlen获取长度
-		read_size = strlen((char*)read_buffer) + 1;
+		buffer_size = strlen((char*)buffer_addr) + 1;
 	}
 
-	if(read_size <= 0)	goto exit;//没有数据
+	if(buffer_size <= 0)	goto exit;//没有数据
 
 	if(call_type == CALL_TAINTED_NORMAL_BUFFER)//普通的字符串，无需特别处理
 	{
-		range r(read_buffer, read_buffer+read_size);
+		range r(buffer_addr, buffer_addr+buffer_size);
 		taint_memory.insert(r);
-		dr_fprintf(f, "[Out] Read Size "PFX"\n", read_size);
+		dr_fprintf(f, "[Out] Read Size "PFX"\n", buffer_size);
 		LOG_MEMORY_LIST("[+] global_memory", f, taint_memory);
 
-		if(within_global_stack(read_buffer, data->stack_bottom, (app_pc)mc->esp))
+		if(within_global_stack(buffer_addr, data->stack_bottom, (app_pc)mc->esp))
 		{
 			stack_memory.insert(r);
 			ELOGF(SHOW_SHADOW_MEMORY, f, "[+] stack_seed [0x%x, 0x%x)\n", r.start, r.end);
@@ -709,15 +713,15 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 		app_pc addr;
 		for(int i = 0; i < in_size; i++) //in_size UDP一般为2，TCP为1
 		{
-			dr_safe_read(read_buffer+i*8, 4, &value, &size);
+			dr_safe_read(buffer_addr+i*8, 4, &value, NULL);
 			if(value <= 0) continue;
-			if(i > 0)	value = read_size - n;
+			if(i > 0)	value = buffer_size - n;
 
 			dr_fprintf(f, "[Out] len "PFX"\n", value);
 
 			n += (size_t)value;
 
-			dr_safe_read(read_buffer+i*8+4, 4, &addr, &size);
+			dr_safe_read(buffer_addr+i*8+4, 4, &addr, NULL);
 			dr_fprintf(f, "[Out] buf "PFX"\n", addr);
 
 			if(in_size == 1 || (in_size == 2 && i > 0))
@@ -1083,14 +1087,13 @@ at_call(app_pc instr_addr, app_pc target_addr)
 	file_t f = data->f;
 	app_pc& call_address = data->call_address;
 	app_pc& return_address = data->return_address;
-	int& buffer_idx = data->buffer_idx;
-	int& size_id = data->size_id;
-	int& read_size_id = data->read_size_id;
-	int& read_size_ref = data->read_size_ref;
-	int& succeed_return_status = data->succeed_return_status;
-	app_pc& read_size_offset = data->read_size_offset;
-	app_pc& read_buffer = data->read_buffer;
-	int& read_size = data->read_size;
+	byte& buffer_idx = data->buffer_idx;
+	byte& in_size_idx = data->in_size_idx;
+	byte& out_size_idx = data->out_size_idx;
+	byte& out_size_ref = data->out_size_ref;
+	byte& succeed_status = data->succeed_status;
+	app_pc& buffer_addr = data->buffer_addr;
+	int& buffer_size = data->buffer_size;
 	function_tables& funcs = data->funcs;
 
     dr_mcontext_t mc = {sizeof(mc),DR_MC_ALL};
@@ -1132,10 +1135,10 @@ at_call(app_pc instr_addr, app_pc target_addr)
 			call_address = instr_addr;
 			return_address = instr_addr + length;
 			buffer_idx = e->rule.buffer_id;
-			size_id = e->rule.size_id;
-			read_size_id = e->rule.read_size_id;
-			read_size_ref = e->rule.read_size_is_reference;
-			succeed_return_status = e->rule.succeed_return_status;
+			in_size_idx = e->rule.in_size_idx;
+			out_size_idx = e->rule.out_size_idx;
+			out_size_ref = e->rule.out_size_is_ref;
+			succeed_status = e->rule.succeed_status;
 
 			dr_fprintf(f,	"-----------------Thread %d-----------------------\n"
 							PFX" call %s:!%s "PFX " and return "PFX"\n"
@@ -1146,40 +1149,47 @@ at_call(app_pc instr_addr, app_pc target_addr)
 
 		if(call_type == CALL_TAINTED_NORMAL_BUFFER ||
 			call_type == CALL_TAINTED_NETWORK_BUFFER){
-			app_pc boffset, soffset;
-			size_t size;
+			app_pc boffset, soffset, outoffset;
 
 			boffset = (app_pc)mc.esp+(buffer_idx-1)*4;
-			soffset = (app_pc)mc.esp+(size_id-1)*4;
-			read_size_offset = (app_pc)mc.esp+(read_size_id-1)*4;
+			soffset = (app_pc)mc.esp+(in_size_idx-1)*4;
+			outoffset = (app_pc)mc.esp+(out_size_idx-1)*4;
 
-			dr_safe_read(boffset, 4, &read_buffer, &size);
-			dr_fprintf(f, "[In] Buffer address "PFX"\n", read_buffer);
+			dr_safe_read(boffset, 4, &buffer_addr, NULL);
+			dr_fprintf(f, "[In] Buffer address "PFX"\n", buffer_addr);
 
-			dr_safe_read(soffset, 4, &read_size, &size);
-			dr_fprintf(f, "[In] Buffer size "PFX"\n", read_size);
+			dr_safe_read(soffset, 4, &buffer_size, NULL);
+			dr_fprintf(f, "[In] Buffer size "PFX"\n", buffer_size);
+
+			if(out_size_ref)
+				dr_safe_read(outoffset, 4, &data->out_size_addr, NULL);
+
 		} else if(call_type == CALL_ALLOCATE_HEAP){
-			dr_safe_read((app_pc)mc.esp+(size_id-1)*4, 4, &read_size, NULL);
-			dr_fprintf(f, "[In] Allocate size "PFX"\n", read_size);
+			dr_safe_read((app_pc)mc.esp+(in_size_idx-1)*4, 4, &buffer_size, NULL);
+			dr_fprintf(f, "[In] Allocate size "PFX"\n", buffer_size);
 		} else if(call_type == CALL_REALLOCATE_HEAP){
-			dr_safe_read((app_pc)mc.esp+(buffer_idx-1)*4, 4, &read_buffer, NULL);
-			dr_fprintf(f, "[In] Original address "PFX"\n", read_buffer);
+			bool t = dr_safe_read((app_pc)mc.esp+(buffer_idx-1)*4, 4, &buffer_addr, NULL);
+			if(t && buffer_addr){
+				dr_fprintf(f, "[In] Original address "PFX"\n", buffer_addr);
 
-			app_pc heapHandle;
-			dr_safe_read((app_pc)mc.esp+(buffer_idx-1-2)*4, 4, &heapHandle, NULL);
-			read_size = HeapSize(heapHandle, 0, read_buffer);
-			dr_fprintf(f, "[In] Original size "PFX"\n", read_size);
+				app_pc heapHandle;
+				dr_safe_read((app_pc)mc.esp+(buffer_idx-1-2)*4, 4, &heapHandle, NULL);
+				buffer_size = HeapSize(heapHandle, 0, buffer_addr);
+				dr_fprintf(f, "[In] Original size "PFX"\n", buffer_size);
+			}
 			
-			dr_safe_read((app_pc)mc.esp+(read_size_id-1)*4, 4, &read_size_ref, NULL);
-			dr_fprintf(f, "[In] ReAllocate size "PFX"\n", read_size_ref);
+			dr_safe_read((app_pc)mc.esp+(out_size_idx-1)*4, 4, &data->new_size, NULL);
+			dr_fprintf(f, "[In] ReAllocate size "PFX"\n", data->new_size);
 		} else if(call_type == CALL_FREE_HEAP){
-			dr_safe_read((app_pc)mc.esp+(buffer_idx-1)*4, 4, &read_buffer, NULL);
-			dr_fprintf(f, "[In] Free address "PFX"\n", read_buffer);
+			bool t = dr_safe_read((app_pc)mc.esp+(buffer_idx-1)*4, 4, &buffer_addr, NULL);
+			if(t && buffer_addr){	
+				dr_fprintf(f, "[In] Free address "PFX"\n", buffer_addr);
 			
-			app_pc heapHandle;
-			dr_safe_read((app_pc)mc.esp+(buffer_idx-1-2)*4, 4, &heapHandle, NULL);
-			read_size = HeapSize(heapHandle, 0, read_buffer);
-			dr_fprintf(f, "[In] Free size "PFX"\n", read_size);
+				app_pc heapHandle;
+				dr_safe_read((app_pc)mc.esp+(buffer_idx-1-2)*4, 4, &heapHandle, NULL);
+				buffer_size = HeapSize(heapHandle, 0, buffer_addr);
+				dr_fprintf(f, "[In] Free size "PFX"\n", buffer_size);
+			}
 		}
 	}
 }

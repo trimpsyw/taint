@@ -23,8 +23,6 @@
 # include "windefs.h"
 #endif
 
-static const char * const build_date = __DATE__ " " __TIME__;
-
 #define MAX_CLEAN_INSTR_COUNT 64
 
 typedef enum{
@@ -38,11 +36,8 @@ typedef enum{
 
 #ifdef WINDOWS
 # define DISPLAY_STRING(msg) dr_messagebox(msg)
-# define IF_WINDOWS(x) x
 #else
 # define DISPLAY_STRING(msg) dr_printf("%s\n", msg);
-# define IF_WINDOWS(x) /* nothing */
-
 #endif
 
 const char* white_dll[] = {
@@ -78,17 +73,17 @@ struct api_call_rule_t
 	char modname[64];				/* 模块名 */
 	char function[64];				/* 函数名 */
 	
-	byte param_count;				/* 函数参数总个数 */
+	sbyte param_count;				/* 函数参数总个数 */
 	
-	byte buffer_id;					/* 参数索引从1开始计数，0代表返回值 */
+	sbyte buffer_id;				/* 参数索引从1开始计数，0代表返回值 */
 	
-	byte in_size_idx;				/* In buffer大小 */
-	byte in_size_is_ref;			/* 是否为指针 */
+	sbyte in_size_idx;				/* In buffer大小 */
+	sbyte in_size_is_ref;			/* 是否为指针 */
 
-	byte out_size_idx;				/* 返回buffer的大小， 0表示在返回值*/
-	byte out_size_is_ref;			/* 是否为指针 */
+	sbyte out_size_idx;				/* 返回buffer的大小， 0表示在返回值*/
+	sbyte out_size_is_ref;			/* 是否为指针 */
 
-	byte succeed_status;			/* 函数调用成功返回0还是非0*/ 
+	sbyte succeed_status;			/* 函数调用成功返回0还是非0*/ 
 
 	api_call_type call_type;		/* 函数调用类型 */
 
@@ -119,9 +114,7 @@ typedef struct call_routine_entry_t {
 	api_call_rule_t rule;
 }call_routine_entry;
 
-
 typedef std::vector<std::string> function_tables;
-
 typedef unsigned int reg_status;
 
 typedef struct thread_data_t
@@ -130,11 +123,11 @@ typedef struct thread_data_t
 	int thread_id;				/* 线程ID */
 	api_call_type call_type;	/* 函数调用类型 */
 	app_pc call_address, into_address, return_address;
-	byte buffer_idx;			/* 索引：缓冲区*/
-	byte in_size_idx;			/* 索引：In Buffer的大小 */
-	byte out_size_idx;			/* 索引：Out Buffer的大小 */
-	byte out_size_ref;			/* 是否为指针 */
-	byte succeed_status;		/* 调用返回0/非0*/
+	sbyte buffer_idx;			/* 索引：缓冲区*/
+	sbyte in_size_idx;			/* 索引：In Buffer的大小 */
+	sbyte out_size_idx;			/* 索引：Out Buffer的大小 */
+	sbyte out_size_ref;			/* 是否为指针 */
+	sbyte succeed_status;		/* 调用返回0/非0*/
 	union{
 		app_pc out_size_addr;	/* 指定Out Buffer的大小 */
 		int new_size;			/* */
@@ -155,20 +148,21 @@ typedef struct thread_data_t
 	function_tables funcs;
 }thread_data;
 
-static memory_list skip_list;
+static const char * const build_date = __DATE__ " " __TIME__;
 
-static void *stats_mutex; /* for multithread support */
+static memory_list skip_list;		/* 白名单模块 */
+static memory_list process_heap;	/* 进程所有的堆空间 */
+static void *stats_mutex;
 static uint num_threads;
-static client_id_t my_id;
 static int tls_index;
+static hashtable_t call_routine_table;
+static const char* appnm;
 
 file_t f_global;
 file_t f_results;
 client_id_t client_id;
 app_pc ntdll_base;
 
-static hashtable_t call_routine_table;
-static const char* appnm;
 char logsubdir[MAXIMUM_PATH];
 char whitelist_lib[MAXIMUM_PATH];
 app_pc app_base;
@@ -287,11 +281,6 @@ process_options(const char* opstr)
 		}
 	}
 }
-
-#define BUFFER_SIZE_BYTES(buf)      sizeof(buf)
-#define BUFFER_SIZE_ELEMENTS(buf)   (BUFFER_SIZE_BYTES(buf) / sizeof((buf)[0]))
-#define BUFFER_LAST_ELEMENT(buf)    (buf)[BUFFER_SIZE_ELEMENTS(buf) - 1]
-#define NULL_TERMINATE_BUFFER(buf)  BUFFER_LAST_ELEMENT(buf) = 0
 
 static void
 close_file(file_t f)
@@ -633,10 +622,9 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 		return;
 
 	file_t f = data->f;
-	byte& out_size_idx = data->out_size_idx;
-	byte& out_size_ref = data->out_size_ref;
-	byte& return_status = data->succeed_status;
-	app_pc& out_size_addr = data->out_size_addr;
+	sbyte& out_size_idx = data->out_size_idx;
+	sbyte& out_size_ref = data->out_size_ref;
+	sbyte& return_status = data->succeed_status;
 	app_pc& buffer_addr = data->buffer_addr;
 	int& buffer_size = data->buffer_size;
 	int in_size = data->buffer_size;
@@ -654,18 +642,28 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 
 	if(call_type == CALL_ALLOCATE_HEAP){
 		buffer_addr = (app_pc)mc->eax;
-		dr_fprintf(f_global, "Alloc buffer %d:"PFX"-"PFX"\n", buffer_size, buffer_addr, buffer_addr+buffer_size);
+		range r(buffer_addr, buffer_addr+buffer_size);
+		dr_fprintf(f_global, "Alloc buffer %d:"PFX"-"PFX"\n", buffer_size, r.start, r.end);
+		process_heap.insert(r);
 		goto exit;
 	} else if(call_type == CALL_FREE_HEAP){
-		if(buffer_addr)
-			dr_fprintf(f_global, "Free buffer %d:"PFX"-"PFX"\n", buffer_size, buffer_addr, buffer_addr+buffer_size);
+		if(buffer_addr){
+			range r(buffer_addr, buffer_addr+buffer_size);
+			process_heap.remove(r.start, r.end);
+			dr_fprintf(f_global, "Free buffer %d:"PFX"-"PFX"\n", buffer_size, r.start, r.end);
+		}
 		goto exit;
 	} else if(call_type == CALL_REALLOCATE_HEAP){
-		if(buffer_addr)
-			dr_fprintf(f_global, "Free buffer %d:"PFX"-"PFX"\n", buffer_size, buffer_addr, buffer_addr+buffer_size);
+		if(buffer_addr){
+			range r(buffer_addr, buffer_addr+buffer_size);
+			process_heap.remove(r.start, r.end);
+			dr_fprintf(f_global, "Free buffer %d:"PFX"-"PFX"\n", buffer_size, r.start, r.end);
+		}
 		app_pc new_addr = (app_pc)mc->eax;
 		int new_size = data->new_size;
-		dr_fprintf(f_global, "Alloc buffer %d:"PFX"-"PFX"\n", new_size, new_addr, new_addr+new_size);
+		range r(new_addr, new_addr+new_size);
+		process_heap.insert(r);
+		dr_fprintf(f_global, "Alloc buffer %d:"PFX"-"PFX"\n", new_size, r.start, r.end);
 		goto exit;
 	}
 
@@ -1087,11 +1085,11 @@ at_call(app_pc instr_addr, app_pc target_addr)
 	file_t f = data->f;
 	app_pc& call_address = data->call_address;
 	app_pc& return_address = data->return_address;
-	byte& buffer_idx = data->buffer_idx;
-	byte& in_size_idx = data->in_size_idx;
-	byte& out_size_idx = data->out_size_idx;
-	byte& out_size_ref = data->out_size_ref;
-	byte& succeed_status = data->succeed_status;
+	sbyte& buffer_idx = data->buffer_idx;
+	sbyte& in_size_idx = data->in_size_idx;
+	sbyte& out_size_idx = data->out_size_idx;
+	sbyte& out_size_ref = data->out_size_ref;
+	sbyte& succeed_status = data->succeed_status;
 	app_pc& buffer_addr = data->buffer_addr;
 	int& buffer_size = data->buffer_size;
 	function_tables& funcs = data->funcs;
@@ -1161,7 +1159,7 @@ at_call(app_pc instr_addr, app_pc target_addr)
 			dr_safe_read(soffset, 4, &buffer_size, NULL);
 			dr_fprintf(f, "[In] Buffer size "PFX"\n", buffer_size);
 
-			if(out_size_ref)
+			if(out_size_ref)//获取out size内存地址
 				dr_safe_read(outoffset, 4, &data->out_size_addr, NULL);
 
 		} else if(call_type == CALL_ALLOCATE_HEAP){
@@ -1671,7 +1669,7 @@ event_thread_init(void *drcontext)
     file_t f = create_thread_logfile(drcontext);
 	thread_data* data = new thread_data();
 
-	memset(data, 0, (byte*)data->taint_regs-(byte*)data);
+	memset(data, 0, (char*)data->taint_regs-(char*)data);
 	memset(data->taint_regs, 0, sizeof(data->taint_regs));
 	data->f = f;
 	data->thread_id = id;
@@ -1718,7 +1716,14 @@ event_thread_exit(void *drcontext)
 static void 
 event_exit(void)
 {
-    dr_mutex_destroy(stats_mutex);
+    hashtable_delete(&call_routine_table);
+#ifdef USE_DRMGR
+	replace_exit();
+	drwrap_exit();
+	drmgr_unregister_tls_field(tls_index);
+	drmgr_exit();
+#endif
+	dr_mutex_destroy(stats_mutex);
 
 	dr_fprintf(f_global, "====== log end ======\n");
 	close_file(f_global);
@@ -1730,8 +1735,8 @@ dr_init(client_id_t id)
     const char* opstr;
 	module_data_t *data;
 
-	client_id = my_id = id;
-	process_options(opstr = dr_get_options(my_id));
+	client_id = id;
+	process_options(opstr = dr_get_options(client_id));
 	appnm = dr_get_application_name();
 	stats_mutex = dr_mutex_create();
 

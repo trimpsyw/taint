@@ -532,7 +532,7 @@ print_propagation(file_t f, int n1, int n2, instr_t* instr, dr_mcontext_t *mc)
 
 #define MAX_SHOW_BINARY_MEMORY 32
 static void 
-mem_disassemble_to_buffer(char* buf, int n, char* mem)
+mem_disassemble_to_buffer(char* buf, int n, byte* mem)
 {
 	int i = 0, j = 0;
 	n = min(n, MAX_SHOW_BINARY_MEMORY);
@@ -546,7 +546,7 @@ mem_disassemble_to_buffer(char* buf, int n, char* mem)
 		static char buffer[MAX_SHOW_BINARY_MEMORY*3+1] = {0};			\
 		dr_fprintf(f, "==== %s(%d) ====\n", s, m.size());							\
 		for(memory_list::iterator it = m.begin(); it != m.end(); it++){	\
-			mem_disassemble_to_buffer(buffer, it->end-it->start, (char*)it->start);	\
+			mem_disassemble_to_buffer(buffer, it->end-it->start, (byte*)it->start);	\
 			dr_fprintf(f, "[0x%x, 0x%x) %s\n", it->start, it->end, buffer);}		\
 		dr_fprintf(f, "\n");											\
 	}
@@ -1964,7 +1964,12 @@ event_thread_exit(void *drcontext)
 
 	for(memory_list::iterator it = data->tainted_all.begin();
 		it != data->tainted_all.end(); it++)
-		dr_fprintf(f, PFX"-"PFX" Size:%d\n", it->start, it->end, it->end-it->start);
+	{
+		static char buffer[MAX_SHOW_BINARY_MEMORY*3+1];
+		int n = it->end-it->start;
+		mem_disassemble_to_buffer(buffer, n, (byte*)it->start);
+		dr_fprintf(f, PFX"-"PFX"[%d]: %s\n", it->start, it->end, n, buffer);
+	}
 
 	dr_fprintf(f, "---- log end for thread %d ----\n", data->thread_id);
 	close_file(f);

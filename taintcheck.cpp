@@ -233,12 +233,33 @@ opc_is_pop(int opc)
 }
 
 static bool
+opc_is_stringop_loop(uint opc)
+{
+    return (opc == OP_rep_ins || opc == OP_rep_outs || opc == OP_rep_movs ||
+            opc == OP_rep_stos || opc == OP_rep_lods || opc == OP_rep_cmps ||
+            opc == OP_repne_cmps || opc == OP_rep_scas || opc == OP_repne_scas);
+}
+
+static bool
+opc_is_stringop(uint opc)
+{
+    return (opc_is_stringop_loop(opc) ||
+            opc == OP_ins || opc == OP_outs || opc == OP_movs ||
+            opc == OP_stos || opc == OP_lods || opc == OP_cmps ||
+            opc == OP_cmps || opc == OP_scas || opc == OP_scas);
+}
+
+static bool
 opc_is_move(int opc)
 {
     return (opc == OP_mov_st || opc == OP_mov_ld ||
             opc == OP_mov_imm || opc == OP_mov_seg ||
             opc == OP_mov_priv || opc == OP_movzx || opc == OP_movsx ||
-			opc == OP_lea || opc == OP_movs);
+			opc == OP_lea || opc == OP_xchg ||
+			opc == OP_ins || opc == OP_outs || opc == OP_movs ||
+            opc == OP_stos || opc == OP_lods ||
+            opc == OP_rep_ins || opc == OP_rep_outs || opc == OP_rep_movs ||
+            opc == OP_rep_stos || opc == OP_rep_lods);
 }
 
 static bool
@@ -420,47 +441,6 @@ lookup_symbols_by_pc(app_pc addr, char* module, char* function, int size, size_t
 		dr_free_module_data(data);
 		return 0;
 	}
-}
-
-static int lookup_syms(app_pc addr, char* module, char *function, int size)
-{
-	drsym_error_t symres;
-	drsym_info_t sym;
-    char file[MAXIMUM_PATH];
-	module_data_t *data;
-
-	data = dr_lookup_module(addr);
-    if (data == NULL) 
-	{
-		strcpy(module, "<nomodule>");
-		sprintf(function, "<noname>", addr); 
-		return -1;
-	}
-
-	sym.struct_size = sizeof(sym);
-    sym.name = function;
-    sym.name_size = size;
-    sym.file = file;
-    sym.file_size = MAXIMUM_PATH;
-
-	const char *modname = dr_module_preferred_name(data);
-    if (modname == NULL)
-        modname = "<noname>";	
-	
-	symres = drsym_lookup_address(data->full_path, addr - data->start, &sym,
-                                DRSYM_DEFAULT_FLAGS);
-	
-	if (symres == DRSYM_SUCCESS || symres == DRSYM_ERROR_LINE_NOT_AVAILABLE) {
-		strncpy(module, modname, size);
-		strncpy(function, sym.name, size);
-	} else {
-		strncpy(module, modname, size);
-		sprintf(function, "%x", addr); 
-	}
-			
-	dr_free_module_data(data);
-
-	return 0;
 }
 
 static app_pc
@@ -913,6 +893,87 @@ taint_propagation(app_pc pc)
 		}
 	} else if(tainted_all.size() == 0 && is_tags_clean(taint_regs)){
 		//没有污染源，直接跳过
+		goto exit0;
+	} else if(opcode == OP_xchg && n1 == 2 && n2 == 2){
+		opnd_t opnd1 = instr_get_src(&instr,0);
+		opnd_t opnd2 = instr_get_src(&instr,1);
+		if(opnd_is_reg(opnd1) && opnd_is_reg(opnd2)){//两个都为寄存器
+			reg_id_t reg1 = opnd_get_reg(opnd1);
+			reg_id_t reg2 = opnd_get_reg(opnd2);
+			reg_status tmp;
+			ELOGF(SHOW_SHADOW_MEMORY, f, "xchg %d <--> %d\n", taint_regs[reg1], taint_regs[reg2]);
+			if(taint_regs[reg1])
+			{
+				if(taint_regs[reg2]){
+					tmp = taint_regs[reg2];
+					taint_regs[reg2] = taint_regs[reg1];
+					taint_regs[reg1] = tmp;
+					clear_tag_eacbdx(reg1, taint_regs);
+					add_tag_eacbdx(reg1, taint_regs);
+					clear_tag_eacbdx(reg2, taint_regs);
+					add_tag_eacbdx(reg2, taint_regs);
+					LOG_REG_LIST(f, taint_regs, &mc);
+				}
+				else{
+					taint_regs[reg2] = taint_regs[reg1];
+					taint_regs[reg1] = 0;
+					clear_tag_eacbdx(reg1, taint_regs);
+					clear_tag_eacbdx(reg2, taint_regs);
+					add_tag_eacbdx(reg2, taint_regs);
+					LOG_REG_LIST(f, taint_regs, &mc);
+				}
+			}
+			else if(taint_regs[reg2])
+			{
+				taint_regs[reg1] = taint_regs[reg2];
+				taint_regs[reg2] = 0;
+				clear_tag_eacbdx(reg1, taint_regs);
+				add_tag_eacbdx(reg1, taint_regs);
+				clear_tag_eacbdx(reg2, taint_regs);
+				LOG_REG_LIST(f, taint_regs, &mc);
+			}
+		}else if((opnd_is_reg(opnd1) && opnd_is_memory_reference(opnd2)) ||
+			(opnd_is_reg(opnd2) && opnd_is_memory_reference(opnd1))){//一个为内存地址一个为寄存器
+			reg_id_t reg0;
+			app_pc addr0;
+			if(opnd_is_reg(opnd1))
+			{
+				reg0 = opnd_get_reg(opnd1);
+				addr0 = opnd_compute_address(opnd2, &mc);
+			}
+			else
+			{
+				reg0 = opnd_get_reg(opnd2);
+				addr0 = opnd_compute_address(opnd1, &mc);
+			}
+			int tainted_size = get_reg_size(reg0);
+			ELOGF(SHOW_SHADOW_MEMORY, f, "xchg %d <--> "PFX"(%d)\n", reg0, addr0, tainted_all.find(addr0));
+			
+			if(tainted_all.find(addr0))
+			{
+				if(!taint_regs[reg0])//内存为污染，寄存器不污染
+				{	
+					taint_regs[reg0] = (reg_status)addr0;
+					add_tag_eacbdx(reg0, taint_regs);
+
+					tainted_all.remove(addr0, addr0+tainted_size);
+					tainted_heap.remove(addr0, addr0+tainted_size);
+					tainted_stack.remove(addr0, addr0+tainted_size);
+				}
+			}
+			else if(taint_regs[reg0])//内存无污染，寄存器污染
+			{
+				taint_regs[reg0] = 0;
+				clear_tag_eacbdx(reg0, taint_regs);
+				range r(addr0, addr0+tainted_size);
+				tainted_all.insert(r);
+				if(within_heap(r.start))
+					tainted_heap.insert(r);
+				else if(within_global_stack(r.start, data->stack_bottom, (app_pc)mc.esp))
+					tainted_stack.insert(r);
+			}
+		}
+
 		goto exit0;
 	} else if(opc_is_pop(opcode)){
 		if(opcode == OP_leave) goto shrink;//mov %esp,%ebp+pop ebp == leave
@@ -1777,6 +1838,10 @@ event_exit(void)
 #endif
 	dr_mutex_destroy(stats_mutex);
 
+	dr_fprintf(f_global, "\n\n====== heap memory ======\n");
+	for(memory_list::iterator it = process_heap.begin();it != process_heap.end(); it++)
+		dr_fprintf(f_global, PFX"-"PFX" Size:%d\n", it->start, it->end, it->end-it->start);
+	
 	dr_fprintf(f_global, "====== log end ======\n");
 	close_file(f_global);
 }

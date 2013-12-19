@@ -249,17 +249,22 @@ opc_is_stringop(uint opc)
             opc == OP_cmps || opc == OP_scas || opc == OP_scas);
 }
 
+static bool 
+opc_is_string_move(uint opc)
+{
+	return (opc == OP_ins || opc == OP_outs || opc == OP_movs ||
+            opc == OP_stos || opc == OP_lods ||
+            opc == OP_rep_ins || opc == OP_rep_outs || opc == OP_rep_movs ||
+            opc == OP_rep_stos || opc == OP_rep_lods);
+}
+
 static bool
 opc_is_move(int opc)
 {
     return (opc == OP_mov_st || opc == OP_mov_ld ||
             opc == OP_mov_imm || opc == OP_mov_seg ||
             opc == OP_mov_priv || opc == OP_movzx || opc == OP_movsx ||
-			opc == OP_lea || opc == OP_xchg ||
-			opc == OP_ins || opc == OP_outs || opc == OP_movs ||
-            opc == OP_stos || opc == OP_lods ||
-            opc == OP_rep_ins || opc == OP_rep_outs || opc == OP_rep_movs ||
-            opc == OP_rep_stos || opc == OP_rep_lods);
+			opc == OP_lea || opc == OP_xchg);
 }
 
 static bool
@@ -525,13 +530,24 @@ print_propagation(file_t f, int n1, int n2, instr_t* instr, dr_mcontext_t *mc)
 		dr_fprintf(f, "\n");								\
 	}
 
+#define MAX_SHOW_BINARY_MEMORY 32
+static void 
+mem_disassemble_to_buffer(char* buf, int n, char* mem)
+{
+	int i = 0, j = 0;
+	n = min(n, MAX_SHOW_BINARY_MEMORY);
+	for(; i < n; i++, j+=3)
+		_snprintf(buf+j, 3, "%02x ", mem[i]);
+	buf[j] = 0;
+}
+
 #define LOG_MEMORY_LIST(s, f, m)										\
 	if(verbose&SHOW_SHADOW_MEMORY){										\
-		static char buffer[64] = {0};									\
-		dr_fprintf(f, "%s(%d):", s, m.size());							\
+		static char buffer[MAX_SHOW_BINARY_MEMORY*3+1] = {0};			\
+		dr_fprintf(f, "==== %s(%d) ====\n", s, m.size());							\
 		for(memory_list::iterator it = m.begin(); it != m.end(); it++){	\
-			memcpy(buffer, (char*)it->start, sizeof(buffer)-1);buffer[sizeof(buffer)-1]=0;	\
-			dr_fprintf(f, "[0x%x, 0x%x) %s ", it->start, it->end, buffer);}		\
+			mem_disassemble_to_buffer(buffer, it->end-it->start, (char*)it->start);	\
+			dr_fprintf(f, "[0x%x, 0x%x) %s\n", it->start, it->end, buffer);}		\
 		dr_fprintf(f, "\n");											\
 	}
 
@@ -598,6 +614,62 @@ add_tag_eacbdx(reg_id_t reg, reg_status* taint_regs)
 	}
 }
 
+enum memory_type_t
+{
+	MEMORY_ON_HEAP		= 0x01,
+	MEMORY_ON_STACK		= 0x10,
+	MEMORY_ON_OTHERS	= 0x11,
+};
+
+static memory_type_t 
+add_taint_memory_mark(memory_list& all, memory_list& heap, memory_list& stack, 
+					  const range& r, memory_type_t type, 
+					  app_pc bottom, app_pc top, file_t f, const char* msg)
+{
+	all.insert(r);
+	
+	ELOGF(SHOW_SHADOW_MEMORY, f, "[+] %s [0x%x, 0x%x)\n", msg, r.start, r.end);
+	LOG_MEMORY_LIST("[+] global_memory", f, all);
+
+	if((type&MEMORY_ON_STACK) && within_global_stack(r.start, bottom, top))
+	{
+		stack.insert(r);
+		LOG_MEMORY_LIST("[+] stack_memory", f, stack);
+		return MEMORY_ON_STACK;
+	}
+	if((type&MEMORY_ON_HEAP) && within_heap(r.start))
+	{
+		heap.insert(r);
+		LOG_MEMORY_LIST("[+] heap_memory", f, heap);
+		return MEMORY_ON_HEAP;
+	}
+	return MEMORY_ON_OTHERS;
+}
+
+static memory_type_t 
+remove_taint_memory_mark(memory_list& all, memory_list& heap, memory_list& stack, 
+					  const range& r, memory_type_t type, 
+					  file_t f, const char* msg)
+{
+	if(all.remove(r.start, r.end))
+	{
+		ELOGF(SHOW_SHADOW_MEMORY, f, "[-] %s [0x%x, 0x%x)\n", msg, r.start, r.end);					
+		LOG_MEMORY_LIST("[-] global_memory", f, all);
+	}
+	
+	if((type&MEMORY_ON_STACK) && stack.remove(r.start, r.end))
+	{
+		LOG_MEMORY_LIST("[-] stack_memory", f, stack);
+		return MEMORY_ON_STACK;
+	}
+	if((type&MEMORY_ON_HEAP) && heap.remove(r.start, r.end))
+	{
+		LOG_MEMORY_LIST("[-] heap_memory", f, heap);
+		return MEMORY_ON_HEAP;
+	}
+	return MEMORY_ON_OTHERS;
+}
+
 static void 
 taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 {
@@ -643,34 +715,41 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 			process_heap.remove(r.start, r.end);
 			dr_fprintf(f, "Free buffer %d:"PFX"-"PFX"\n", buffer_size, r.start, r.end);
 
-			if(tainted_heap.remove(r.start, r.end))
-			{
-				ELOGF(SHOW_SHADOW_MEMORY, f, "[-] free_buffer [0x%x, 0x%x)\n", r.start, r.end);					
-				LOG_MEMORY_LIST("[-] heap_memory", f, tainted_heap);
-				tainted_all.remove(r.start, r.end);
-				LOG_MEMORY_LIST("[-] global_memory", f, tainted_all);
-			}
+			//释放有污染标记的内存必须清空相关的数据结构
+			remove_taint_memory_mark(tainted_all, tainted_heap, tainted_stack, 
+									 r, MEMORY_ON_HEAP, 
+									 f, "free_buffer");
 		}
 		goto exit;
 	} else if(call_type == CALL_REALLOCATE_HEAP){
+		bool ori_tainted = false;
 		if(buffer_addr){
 			range r(buffer_addr, buffer_addr+buffer_size);
 			process_heap.remove(r.start, r.end);
 			dr_fprintf(f, "Free buffer %d:"PFX"-"PFX"\n", buffer_size, r.start, r.end);
 
-			if(tainted_heap.remove(r.start, r.end))
-			{
-				ELOGF(SHOW_SHADOW_MEMORY, f, "[-] reallocate [0x%x, 0x%x)\n", r.start, r.end);					
-				LOG_MEMORY_LIST("[-] heap_memory", f, tainted_heap);
-				tainted_all.remove(r.start, r.end);
-				LOG_MEMORY_LIST("[-] global_memory", f, tainted_all);
-			}
+			//释放有污染标记的内存必须清空相关的数据结构
+			ori_tainted = remove_taint_memory_mark(tainted_all, tainted_heap, 
+								tainted_stack, r, MEMORY_ON_HEAP, 
+								f, "reallocateheap") == MEMORY_ON_HEAP;
 		}
 		app_pc new_addr = (app_pc)mc->eax;
 		int new_size = data->new_size;
 		range r(new_addr, new_addr+new_size);
 		process_heap.insert(r);
 		dr_fprintf(f, "Alloc buffer %d:"PFX"-"PFX"\n", new_size, r.start, r.end);
+		
+		//之前的内存就是污染的，由于realloc将会复制原先内存，所以必须传播污染状态到新内存
+		if(ori_tainted){
+			//如果realloc的新内存比原内存大，则取原内存大小，否则取新内存大小
+			if(new_size < buffer_size) r.end = r.start + new_size;
+			else r.end = r.start + buffer_size;
+			add_taint_memory_mark(tainted_all, tainted_heap, tainted_stack, 
+								  r, MEMORY_ON_HEAP, 
+								  data->stack_bottom, (app_pc)mc->esp, 
+								  f, "reallocateheap");
+		}
+		
 		goto exit;
 	}
 
@@ -698,22 +777,11 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 
 	if(call_type == CALL_TAINTED_NORMAL_BUFFER)//普通的字符串，无需特别处理
 	{
-		range r(buffer_addr, buffer_addr+buffer_size);
-		tainted_all.insert(r);
 		dr_fprintf(f, "[Out] Read Size "PFX"\n", buffer_size);
-		ELOGF(SHOW_SHADOW_MEMORY, f, "[+] taint_seed [0x%x, 0x%x)\n", r.start, r.end);
-		LOG_MEMORY_LIST("[+] global_memory", f, tainted_all);
-
-		if(within_global_stack(buffer_addr, data->stack_bottom, (app_pc)mc->esp))
-		{
-			tainted_stack.insert(r);
-			LOG_MEMORY_LIST("[+] stack_memory", f, tainted_stack);
-		}
-		else if(within_heap(buffer_addr))
-		{
-			tainted_heap.insert(r);
-			LOG_MEMORY_LIST("[+] heap_memory", f, tainted_heap);
-		}
+		range r(buffer_addr, buffer_addr+buffer_size);
+		add_taint_memory_mark(tainted_all, tainted_heap, tainted_stack, 
+							  r, MEMORY_ON_OTHERS, data->stack_bottom, 
+							  (app_pc)mc->esp, f, "taint_seed");
 	}
 	else if(call_type == CALL_TAINTED_NETWORK_BUFFER)
 	{
@@ -736,24 +804,12 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 
 			if(in_size == 1 || (in_size == 2 && i > 0))
 			{
-				range r(addr, addr+value);
-				tainted_all.insert(r);
 				dr_fprintf(f, "[Out] Taint memory "PFX" %d\n", addr, value);
-				ELOGF(SHOW_SHADOW_MEMORY, f, "[+] taint_seed [0x%x, 0x%x)\n", r.start, r.end);
-				LOG_MEMORY_LIST("[+] global_memory", f, tainted_all);
-
-				if(within_global_stack(addr, data->stack_bottom, (app_pc)mc->esp))
-				{
-					tainted_stack.insert(r);
-					LOG_MEMORY_LIST("[+] stack_memory", f, tainted_stack);
-				}
-				else if(within_heap(addr))
-				{
-					tainted_heap.insert(r);
-					LOG_MEMORY_LIST("[+] heap_memory", f, tainted_heap);
-				}
+				range r(addr, addr+value);
+				add_taint_memory_mark(tainted_all, tainted_heap, tainted_stack, 
+										r, MEMORY_ON_OTHERS, data->stack_bottom, 
+										(app_pc)mc->esp, f, "taint_seed");
 			}
-
 		}
 	}
 
@@ -830,7 +886,6 @@ taint_alert(instr_t* instr, app_pc target_addr, void* drcontext, dr_mcontext_t *
 #define CONSTRUCT_INSTR_BEGIN(pc, drcontext)	\
 	instr_t instr;								\
 	instr_init(drcontext, &instr);				\
-	instr_reuse(drcontext, &instr);				\
 	decode(drcontext, pc, &instr);				
 
 #define CONSTRUCT_INSTR_END(drcontext)			\
@@ -851,6 +906,124 @@ get_reg_size(reg_id_t reg)
 	else if(reg>=DR_REG_START_8 && reg<=DR_REG_STOP_8)
 		return 1;
 	return 4;
+}
+
+static void 
+taint_propagation_str_mov(app_pc pc, int opcode)
+{
+	void* drcontext = dr_get_current_drcontext();
+#ifndef USE_DRMGR
+	thread_data* data = (thread_data*)dr_get_tls_field(drcontext);
+#else
+	thread_data* data = (thread_data*)drmgr_get_tls_field(drcontext, tls_index);
+#endif
+	api_call_type& call_type = data->call_type;
+	
+	if(call_type) return;
+
+	file_t f = data->f;
+	reg_status* taint_regs = data->taint_regs;
+	memory_list& tainted_all = data->tainted_all;
+	memory_list& tainted_stack = data->tainted_stack;
+	
+    dr_mcontext_t mc = {sizeof(mc),DR_MC_ALL};
+    dr_get_mcontext(drcontext, &mc);
+
+	CONSTRUCT_INSTR_BEGIN(pc, drcontext);
+	print_instr(drcontext, f, &instr, pc);
+	
+	//没有污染源，直接跳过
+	if(tainted_all.size() == 0 && is_tags_clean(taint_regs))
+		goto done;
+
+	if(opcode == OP_movs || opcode == OP_rep_movs)
+	{
+		//从ds:esi指向的源地址复制一定数量的字节到es:edi指向的目的地址
+		//example: movs %ds:(%esi) %esi %edi -> %es:(%edi) %esi %edi
+		//example: rep movs %ds:(%esi) %esi %edi %ecx -> %es:(%edi) %esi %edi %ecx
+		int repeat_num = 1;
+		opnd_t src = instr_get_src(&instr, 0);
+		opnd_t dst = instr_get_dst(&instr, 0);
+		app_pc saddr = opnd_compute_address(src, &mc);
+		app_pc daddr = opnd_compute_address(dst, &mc);
+		if(opcode == OP_rep_movs) repeat_num = mc.ecx;
+		for(int i = 0; i < repeat_num; i++)
+		{
+			range r(daddr, daddr+4);
+			if(tainted_all.find(saddr))//源内存污染，目的地内存必须标记
+				add_taint_memory_mark(tainted_all, tainted_heap, tainted_stack, 
+									  r, MEMORY_ON_OTHERS, data->stack_bottom, 
+									  (app_pc)mc.esp, f, "propagation_string_movs");
+			else if(tainted_all.find(daddr))//源内存无污染，目的地内存必须清空
+				remove_taint_memory_mark(tainted_all, tainted_heap, tainted_stack, 
+										r, MEMORY_ON_OTHERS, 
+										f, "propagation_string_movs");
+
+			saddr += 4;
+			daddr += 4;
+		}
+
+	}
+	else if(opcode == OP_lods || opcode == OP_rep_lods)
+	{
+		//从ds:esi指向的源地址复制一定数量的字节到al/ax/eax
+		// lods %es:(%edi) %edi -> %eax %edi
+		int repeat_num = 1;
+		opnd_t src = instr_get_src(&instr, 0);
+		opnd_t dst = instr_get_dst(&instr, 0);
+		app_pc saddr = opnd_compute_address(src, &mc);
+		reg_id_t dreg = opnd_get_reg(dst);
+		int size = reg_get_size(dreg);
+		if(opcode == OP_rep_lods) repeat_num = mc.ecx;
+
+		for(int i = repeat_num-1; i < repeat_num; i++)
+		{
+			range r(saddr+i*size, saddr+i*size+size);
+			if(tainted_all.find(r.start))//源内存污染，目的寄存器必须标记
+			{
+				taint_regs[dreg] = 1;
+				add_tag_eacbdx(dreg, taint_regs);
+			}
+			else //源内存无污染，目的寄存器必须清空
+			{
+				taint_regs[dreg] = 0;
+				clear_tag_eacbdx(dreg, taint_regs);
+			}
+		}
+	}
+	else if(opcode == OP_stos || opcode == OP_rep_stos)
+	{
+		//复制al/ax/eax的值到ds:esi指向的目的地地址
+		// stos   %eax %edi -> %es:(%edi) %edi
+		// data16 stos   %ax %edi -> %es:(%edi) %edi
+		// rep stos %eax %edi %ecx -> %es:(%edi) %edi %ecx
+		int repeat_num = 1;
+		opnd_t src = instr_get_src(&instr, 0);
+		opnd_t dst = instr_get_dst(&instr, 0);
+		reg_id_t sreg = opnd_get_reg(src);
+		app_pc daddr = opnd_compute_address(dst, &mc);
+		int size = reg_get_size(sreg);
+		if(opcode == OP_rep_stos) repeat_num = mc.ecx;
+		bool tainted = taint_regs[sreg] != 0;
+
+		for(int i = 0; i < repeat_num; i++)
+		{
+			range r(daddr, daddr+size);
+			if(tainted)//源寄存器污染，目的地内存必须标记
+				add_taint_memory_mark(tainted_all, tainted_heap, tainted_stack, 
+									r, MEMORY_ON_OTHERS, data->stack_bottom, 
+									(app_pc)mc.esp, f, "propagation_string_stos");
+			else if(tainted_all.find(daddr))//源寄存器无污染，目的地内存必须清空
+				remove_taint_memory_mark(tainted_all, tainted_heap, tainted_stack, 
+									r, MEMORY_ON_OTHERS, 
+									f, "propagation_string_stos");
+
+			daddr += size;
+		}
+	}
+
+done:
+	CONSTRUCT_INSTR_END(drcontext);
 }
 
 static void 
@@ -1100,20 +1273,10 @@ dest:
 				{
 					tainting_addr = opnd_compute_address(dst_opnd, &mc);
 					range r(tainting_addr, tainting_addr+taint_size);
-					tainted_all.insert(r);
-					ELOGF(SHOW_SHADOW_MEMORY, f, "[+] taint_propagation [0x%x, 0x%x)\n", r.start, r.end);					
-					LOG_MEMORY_LIST("[+] global_memory", f, tainted_all);
 					
-					if(within_global_stack(tainting_addr, data->stack_bottom, (app_pc)mc.esp))
-					{
-						tainted_stack.insert(r);
-						LOG_MEMORY_LIST("[+] stack_memory", f, tainted_stack);
-					}
-					else if(within_heap(tainting_addr))
-					{
-						tainted_heap.insert(r);
-						LOG_MEMORY_LIST("[+] heap_memory", f, tainted_heap);
-					}
+					add_taint_memory_mark(tainted_all, tainted_heap,  tainted_stack, 
+						r, MEMORY_ON_OTHERS, data->stack_bottom, 
+						(app_pc)mc.esp, f, "taint_propagation");
 				}
 			}
 
@@ -1122,20 +1285,9 @@ dest:
 			{
 				tainting_addr = opnd_get_pc(dst_opnd);
 				range r(tainting_addr, tainting_addr+taint_size);
-				tainted_all.insert(r);
-				ELOGF(SHOW_SHADOW_MEMORY, f, "[+] taint_propagation [0x%x, 0x%x)\n", r.start, r.end);					
-				LOG_MEMORY_LIST("[+] global_memory", f, tainted_all);
-				
-				if(within_global_stack(tainting_addr, data->stack_bottom, (app_pc)mc.esp))
-				{
-					tainted_stack.insert(r);
-					LOG_MEMORY_LIST("[+] stack_memory", f, tainted_stack);
-				}
-				else if(within_heap(tainting_addr))
-				{
-					tainted_heap.insert(r);
-					LOG_MEMORY_LIST("[+] heap_memory", f, tainted_heap);
-				}
+				add_taint_memory_mark(tainted_all, tainted_heap,  tainted_stack, 
+										r, MEMORY_ON_OTHERS, data->stack_bottom, 
+										(app_pc)mc.esp, f, "taint_propagation");
 			}
 
 			DOLOG(SHOW_TAINTING, {	
@@ -1164,15 +1316,9 @@ dest:
 			else if(opnd_is_memory_reference(dst_opnd))
 			{
 				app_pc addr = opnd_compute_address(dst_opnd, &mc);
-				if(tainted_all.remove(addr, addr+taint_size))
-				{
-					ELOGF(SHOW_SHADOW_MEMORY, f, "[-] taint_propagation [0x%x, 0x%x)\n", addr, addr+taint_size);					
-					LOG_MEMORY_LIST("[-] global_memory", f, tainted_all);
-				}
-				if(tainted_stack.remove(addr, addr+taint_size))
-					LOG_MEMORY_LIST("[-] stack_memory", f, tainted_stack);
-				if(tainted_heap.remove(addr, addr+taint_size))
-					LOG_MEMORY_LIST("[-] heap_memory", f, tainted_heap);
+				range r(addr, addr+taint_size);
+				remove_taint_memory_mark(tainted_all, tainted_heap, tainted_stack, 
+										r, MEMORY_ON_OTHERS,  f, "taint_propagation");
 			}
 		}
 		if(++nn < n2) goto dest;
@@ -1303,6 +1449,18 @@ at_call(app_pc instr_addr, app_pc target_addr)
 			}
 		}
 	}
+
+	if(call_type == CALL_UNDEFINED)
+	{
+		if(funcs.size()==0 && target_addr>=app_base && target_addr<=app_end)
+			funcs.push_back(func2);
+		else if(funcs.size())
+		{
+			print_function_tables(f, "NowAt\t", funcs);
+			funcs.push_back(func2);
+			print_function_tables(f, "Call\t", funcs);
+		}
+	}
 }
 
 static void
@@ -1363,16 +1521,12 @@ at_return(app_pc instr_addr, app_pc target_addr)
 
 	if(call_type == CALL_UNDEFINED)
 	{
-		print_function_tables(f, "Leaving\t", funcs);
-		
-		//从内部跳转到外部白名单dll,啥事情都不做
-		if(within_whitelist(instr_addr) == false && within_whitelist(target_addr) == true)
-			;
-
-		else
+		if(funcs.size())
+		{
+			print_function_tables(f, "Leaving\t", funcs);
 			funcs.pop_back();
-
-		print_function_tables(f, "Return\t", funcs);
+			print_function_tables(f, "Return\t", funcs);
+		}
 	}
 }
 
@@ -1411,15 +1565,12 @@ at_jmp(app_pc instr_addr, app_pc target_addr)
 		else dr_fprintf(f, "\tInto "PFX" %s:!??\n", target_addr, modname2);
 		);
 
-	//if(skip_list.at(instr_addr) == skip_list.at(target_addr))
+	if(data->funcs.size())
 	{
 		data->funcs.pop_back();
 		data->funcs.push_back(func2);
+		print_function_tables(f, "JmpTo\t", data->funcs);
 	} 
-	//else if(within_whitelist(target_addr)){
-	//	data->funcs.pop_back();
-	//}
-	print_function_tables(f, "JmpTo\t", data->funcs);
 }
 
 static void 
@@ -1454,12 +1605,6 @@ at_jmp_ind(app_pc instr_addr, app_pc target_addr)
 		else if(t2 > 0) dr_fprintf(f, "\tInto "PFX" %s:!%s\n", target_addr, modname2, func2);
 		else dr_fprintf(f, "\tInto "PFX" %s:!??\n", target_addr, modname2);
 		);
-	
-	if(within_whitelist(target_addr)|| data->return_address == target_addr) 
-	{
-		data->funcs.pop_back();
-		print_function_tables(f, "FixIt\t", data->funcs);
-	}
 }
 
 static void 
@@ -1608,11 +1753,11 @@ event_bb_analysis(void *drcontext, void *tag, instrlist_t *bb,
 	{
 		if(data->return_address == (app_pc)tag)
 			taint_seed((app_pc)tag, drcontext, &mc);
-		else if(!instr_is_return(instrlist_last(bb)))
+		/*else if(!instr_is_return(instrlist_last(bb)))
 		{
 			sd->skip = 1;
 			return DR_EMIT_DEFAULT;
-		}
+		}*/
 	}
 
 	app_pc pc = (app_pc)tag;
@@ -1659,16 +1804,17 @@ event_bb_insert(void *drcontext, void *tag, instrlist_t *bb,
     } else if (instr_is_return(instr)) {
         dr_insert_mbr_instrumentation(drcontext, bb, instr, at_return, SPILL_SLOT_1);
     } else if (instr_is_ubr(instr)) {
-        dr_insert_ubr_instrumentation(drcontext, bb, instr, (app_pc)at_jmp);	
+        dr_insert_ubr_instrumentation(drcontext, bb, instr, at_jmp);	
 	} else if(opcode == OP_jmp_ind || opcode == OP_jmp_far_ind){
 		dr_insert_mbr_instrumentation(drcontext, bb, instr, at_jmp_ind, SPILL_SLOT_1);
 	} else if(opc_is_move(opcode) || opc_is_pop(opcode) || opcode_is_arith(opcode)){
-		dr_insert_clean_call(drcontext, bb, instr, taint_propagation, false, 1, 
-			OPND_CREATE_INTPTR(instr_get_app_pc(instr)));
-	} else {
+		dr_insert_clean_call(drcontext, bb, instr, taint_propagation, false, 1, OPND_CREATE_INTPTR(pc));
+	} else if(opc_is_string_move(opcode)){
+		dr_insert_clean_call(drcontext, bb, instr, taint_propagation_str_mov, false, 
+			2, OPND_CREATE_INTPTR(pc), OPND_CREATE_INT32(opcode));
+	} else{
 		insert_count --;
-		//dr_insert_clean_call(drcontext, bb, instr, at_others, false, 1, 
-		//		OPND_CREATE_INTPTR(instr_get_app_pc(instr)));
+		//dr_insert_clean_call(drcontext, bb, instr, at_others, false, 1, OPND_CREATE_INTPTR(pc));
 	}
 	++insert_count;
 

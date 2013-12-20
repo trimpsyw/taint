@@ -1166,11 +1166,11 @@ taint_propagation(app_pc pc)
 		if(!dr_safe_read((void *)mc.esp, 4, &value, NULL))
 			goto done;
 	
-		if(tainted_all.find(value))
+		if(tainted_all.find(value)){
 			add_taint_register_mark(taint_regs, reg, (reg_status)value);
-		else
+			LOG_REG_LIST(f, taint_regs, &mc);
+		} else
 			remove_taint_register_mark(taint_regs, reg);
-		LOG_REG_LIST(f, taint_regs, &mc);
 		goto done;
 	} else if(opcode == OP_xor && n1 == 2){ /* xor eax, eax */
 		opnd_t opnd1 = instr_get_src(&instr, 0);
@@ -1179,8 +1179,10 @@ taint_propagation(app_pc pc)
 		if(opnd_is_reg(opnd1) && opnd_is_reg(opnd2) && 
 			(reg1=opnd_get_reg(opnd1)) == (reg2=opnd_get_reg(opnd2)))
 		{
-			remove_taint_register_mark(taint_regs, reg1);
-			LOG_REG_LIST(f, taint_regs, &mc);
+			if(taint_regs[reg1]){
+				remove_taint_register_mark(taint_regs, reg1);
+				LOG_REG_LIST(f, taint_regs, &mc);
+			}
 			goto done;
 		}
 	} else  if(opc_is_move(opcode) && n1==1 && n2==1){//mov %esp,%ebp

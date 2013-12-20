@@ -196,9 +196,7 @@ call_routine_entry_free(void* p)
 static bool
 within_whitelist(app_pc pc)
 {
-	if(skip_list.size() && skip_list.find(pc))
-		return true;		
-	return false;
+	return skip_list.find(pc);		
 }
 
 static bool
@@ -670,6 +668,43 @@ remove_taint_memory_mark(memory_list& all, memory_list& heap, memory_list& stack
 	return MEMORY_ON_OTHERS;
 }
 
+static void
+add_taint_register_mark(reg_status* tainted_regs, reg_id_t r, reg_status value)
+{
+	tainted_regs[r] = value ? value : 1;
+	add_tag_eacbdx(r, tainted_regs);
+}
+
+static void
+remove_taint_register_mark(reg_status* tainted_regs, reg_id_t r)
+{
+	tainted_regs[r] = 0;
+	clear_tag_eacbdx(r, tainted_regs);
+}
+
+static bool
+swap_taint_register_mark(reg_status* tainted_regs, reg_id_t r1, reg_id_t r2)
+{
+	//如果两者都是污染的或者非污染的，则只需要交换r1和r2本身
+	//如果一个有一个无，则还需要考虑16位和8位子寄存器的交换
+	reg_status s1 = tainted_regs[r1];
+	reg_status s2 = tainted_regs[r2];
+	reg_id_t r0;
+	tainted_regs[r1] = s2;
+	tainted_regs[r2] = s1;
+
+	if((s1 && !s2) || (!s1 && s2 && (r0=r1,r1=r2,r2=r0)))
+	{
+		//OK，两种情况都统一成r1有r2无污染 ---> r1无r2有
+		clear_tag_eacbdx(r1, tainted_regs);
+		clear_tag_eacbdx(r2, tainted_regs);
+		add_tag_eacbdx(r2, tainted_regs);
+		return true;
+	}
+
+	return s1 && s2;
+}
+
 static void 
 taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 {
@@ -700,7 +735,7 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 	if((return_status > 0 && (int)mc->eax <= 0) || (return_status == 0 && mc->eax != 0))
 	{
 		dr_fprintf(f, "Failed to call function\n");
-		goto exit;
+		goto done;
 	}
 
 	if(call_type == CALL_ALLOCATE_HEAP){
@@ -708,7 +743,7 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 		range r(buffer_addr, buffer_addr+buffer_size);
 		dr_fprintf(f, "Alloc buffer %d:"PFX"-"PFX"\n", buffer_size, r.start, r.end);
 		process_heap.insert(r);
-		goto exit;
+		goto done;
 	} else if(call_type == CALL_FREE_HEAP){
 		if(buffer_addr){
 			range r(buffer_addr, buffer_addr+buffer_size);
@@ -720,7 +755,7 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 									 r, MEMORY_ON_HEAP, 
 									 f, "free_buffer");
 		}
-		goto exit;
+		goto done;
 	} else if(call_type == CALL_REALLOCATE_HEAP){
 		bool ori_tainted = false;
 		if(buffer_addr){
@@ -750,7 +785,7 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 								  f, "reallocateheap");
 		}
 		
-		goto exit;
+		goto done;
 	}
 
 	int value;
@@ -773,7 +808,7 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 		buffer_size = strlen((char*)buffer_addr) + 1;
 	}
 
-	if(buffer_size <= 0)	goto exit;//没有数据
+	if(buffer_size <= 0)	goto done;//没有数据
 
 	if(call_type == CALL_TAINTED_NORMAL_BUFFER)//普通的字符串，无需特别处理
 	{
@@ -791,15 +826,16 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 		app_pc addr;
 		for(int i = 0; i < in_size; i++) //in_size UDP一般为2，TCP为1
 		{
-			dr_safe_read(buffer_addr+i*8, 4, &value, NULL);
-			if(value <= 0) continue;
+			if(!dr_safe_read(buffer_addr+i*8, 4, &value, NULL) || value <= 0) 
+				continue;
 			if(i > 0)	value = buffer_size - n;
 
 			dr_fprintf(f, "[Out] len "PFX"\n", value);
 
 			n += (size_t)value;
 
-			dr_safe_read(buffer_addr+i*8+4, 4, &addr, NULL);
+			if(!dr_safe_read(buffer_addr+i*8+4, 4, &addr, NULL) || addr == 0)
+				continue;
 			dr_fprintf(f, "[Out] buf "PFX"\n", addr);
 
 			if(in_size == 1 || (in_size == 2 && i > 0))
@@ -813,7 +849,7 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 		}
 	}
 
-exit:
+done:
 	call_type = CALL_UNDEFINED;
 }
 
@@ -981,13 +1017,13 @@ taint_propagation_str_mov(app_pc pc, int opcode)
 			range r(saddr+i*size, saddr+i*size+size);
 			if(tainted_all.find(r.start))//源内存污染，目的寄存器必须标记
 			{
-				taint_regs[dreg] = 1;
-				add_tag_eacbdx(dreg, taint_regs);
+				add_taint_register_mark(taint_regs, dreg, 1);
+				LOG_REG_LIST(f, taint_regs, &mc);
 			}
 			else //源内存无污染，目的寄存器必须清空
 			{
-				taint_regs[dreg] = 0;
-				clear_tag_eacbdx(dreg, taint_regs);
+				remove_taint_register_mark(taint_regs, dreg);
+				LOG_REG_LIST(f, taint_regs, &mc);
 			}
 		}
 	}
@@ -1066,45 +1102,16 @@ taint_propagation(app_pc pc)
 		}
 	} else if(tainted_all.size() == 0 && is_tags_clean(taint_regs)){
 		//没有污染源，直接跳过
-		goto exit0;
+		goto done;
 	} else if(opcode == OP_xchg && n1 == 2 && n2 == 2){
 		opnd_t opnd1 = instr_get_src(&instr,0);
 		opnd_t opnd2 = instr_get_src(&instr,1);
 		if(opnd_is_reg(opnd1) && opnd_is_reg(opnd2)){//两个都为寄存器
 			reg_id_t reg1 = opnd_get_reg(opnd1);
 			reg_id_t reg2 = opnd_get_reg(opnd2);
-			reg_status tmp;
 			ELOGF(SHOW_SHADOW_MEMORY, f, "xchg %d <--> %d\n", taint_regs[reg1], taint_regs[reg2]);
-			if(taint_regs[reg1])
-			{
-				if(taint_regs[reg2]){
-					tmp = taint_regs[reg2];
-					taint_regs[reg2] = taint_regs[reg1];
-					taint_regs[reg1] = tmp;
-					clear_tag_eacbdx(reg1, taint_regs);
-					add_tag_eacbdx(reg1, taint_regs);
-					clear_tag_eacbdx(reg2, taint_regs);
-					add_tag_eacbdx(reg2, taint_regs);
-					LOG_REG_LIST(f, taint_regs, &mc);
-				}
-				else{
-					taint_regs[reg2] = taint_regs[reg1];
-					taint_regs[reg1] = 0;
-					clear_tag_eacbdx(reg1, taint_regs);
-					clear_tag_eacbdx(reg2, taint_regs);
-					add_tag_eacbdx(reg2, taint_regs);
-					LOG_REG_LIST(f, taint_regs, &mc);
-				}
-			}
-			else if(taint_regs[reg2])
-			{
-				taint_regs[reg1] = taint_regs[reg2];
-				taint_regs[reg2] = 0;
-				clear_tag_eacbdx(reg1, taint_regs);
-				add_tag_eacbdx(reg1, taint_regs);
-				clear_tag_eacbdx(reg2, taint_regs);
+			if(swap_taint_register_mark(taint_regs, reg1, reg2))
 				LOG_REG_LIST(f, taint_regs, &mc);
-			}
 		}else if((opnd_is_reg(opnd1) && opnd_is_memory_reference(opnd2)) ||
 			(opnd_is_reg(opnd2) && opnd_is_memory_reference(opnd1))){//一个为内存地址一个为寄存器
 			reg_id_t reg0;
@@ -1124,64 +1131,57 @@ taint_propagation(app_pc pc)
 			
 			if(tainted_all.find(addr0))
 			{
-				if(!taint_regs[reg0])//内存为污染，寄存器不污染
+				//寄存器污染+内存污染的情况，没有数据要变动
+				if(!taint_regs[reg0])//内存污染+寄存器不污染 ---> 内存无污染+寄存器污染
 				{	
-					taint_regs[reg0] = (reg_status)addr0;
-					add_tag_eacbdx(reg0, taint_regs);
-
-					tainted_all.remove(addr0, addr0+tainted_size);
-					tainted_heap.remove(addr0, addr0+tainted_size);
-					tainted_stack.remove(addr0, addr0+tainted_size);
+					add_taint_register_mark(taint_regs, reg0, (reg_status)addr0);
+					LOG_REG_LIST(f, taint_regs, &mc);
+					remove_taint_memory_mark(tainted_all, tainted_heap, tainted_stack, 
+											range(addr0,addr0+tainted_size), MEMORY_ON_OTHERS, 
+											f, "taint_propagation_xchg");
 				}
 			}
-			else if(taint_regs[reg0])//内存无污染，寄存器污染
+			else if(taint_regs[reg0])//内存无污染+寄存器污染 --> 内存污染+寄存器无污染
 			{
-				taint_regs[reg0] = 0;
-				clear_tag_eacbdx(reg0, taint_regs);
+				remove_taint_register_mark(taint_regs, reg0);
+				LOG_REG_LIST(f, taint_regs, &mc);
 				range r(addr0, addr0+tainted_size);
-				tainted_all.insert(r);
-				if(within_heap(r.start))
-					tainted_heap.insert(r);
-				else if(within_global_stack(r.start, data->stack_bottom, (app_pc)mc.esp))
-					tainted_stack.insert(r);
+				add_taint_memory_mark(tainted_all, tainted_heap, tainted_stack, 
+									  r, MEMORY_ON_OTHERS, data->stack_bottom,
+									  (app_pc)mc.esp, f, "taint_propagation_xchg");
 			}
 		}
 
-		goto exit0;
+		goto done;
 	} else if(opc_is_pop(opcode)){
 		if(opcode == OP_leave) goto shrink;//mov %esp,%ebp+pop ebp == leave
 		
-		if(n2 <= 0)	goto exit0;
+		if(n2 <= 0)	goto done;
 		
 		opnd_t dst_opnd = instr_get_dst(&instr, 0);
-		if(!opnd_is_reg(dst_opnd)) goto exit0;
+		if(!opnd_is_reg(dst_opnd)) goto done;
 		
 		reg_id_t reg = opnd_get_reg(dst_opnd);
-		
 		app_pc value;
-		size_t size;
-		dr_safe_read((void *)mc.esp, 4, &value, &size);
+		if(!dr_safe_read((void *)mc.esp, 4, &value, NULL))
+			goto done;
 	
 		if(tainted_all.find(value))
-			taint_regs[reg] = value == 0 ? 1 : (reg_status)value;
+			add_taint_register_mark(taint_regs, reg, (reg_status)value);
 		else
-		{
-			taint_regs[reg] = 0;
-			clear_tag_eacbdx(reg, taint_regs);
-		}
-		goto exit0;
-	} else if(opcode == OP_xor){ /* xor eax, eax */
-		if(n1 != 2)	goto exit0;
-
+			remove_taint_register_mark(taint_regs, reg);
+		LOG_REG_LIST(f, taint_regs, &mc);
+		goto done;
+	} else if(opcode == OP_xor && n1 == 2){ /* xor eax, eax */
 		opnd_t opnd1 = instr_get_src(&instr, 0);
 		opnd_t opnd2 = instr_get_src(&instr, 1);
 		reg_id_t reg1, reg2;
 		if(opnd_is_reg(opnd1) && opnd_is_reg(opnd2) && 
 			(reg1=opnd_get_reg(opnd1)) == (reg2=opnd_get_reg(opnd2)))
 		{
-			taint_regs[reg1] = 0;
-			clear_tag_eacbdx(reg1, taint_regs);
-			goto exit0;
+			remove_taint_register_mark(taint_regs, reg1);
+			LOG_REG_LIST(f, taint_regs, &mc);
+			goto done;
 		}
 	} else  if(opc_is_move(opcode) && n1==1 && n2==1){//mov %esp,%ebp
 		opnd_t src_opnd, dst_opnd;
@@ -1194,7 +1194,7 @@ shrink:
 			app_pc top = (app_pc)mc.ebp+4;
 			if(top < data->stack_top)	data->stack_top = top;
 			LOG_MEMORY_LIST("[-] global_memory", f, tainted_all);
-			goto exit0;
+			goto done;
 		}
 	}
 
@@ -1224,9 +1224,10 @@ propagation:
 			{
 				taint_addr = opnd_compute_address(src_opnd, &mc);
 				app_pc mem_addr;
-				dr_safe_read(taint_addr, 4, &mem_addr, NULL);
 				if(tainted_all.find(taint_addr) || 
-					(opc_is_move(opcode) && opcode != OP_lea && tainted_all.find(taint_addr=mem_addr)))
+					(opc_is_move(opcode) && opcode != OP_lea && 
+						dr_safe_read(taint_addr, 4, &mem_addr, NULL) && 
+						mem_addr && tainted_all.find(taint_addr=mem_addr)))
 				{
 					src_tainted = true;
 					type = 1;
@@ -1262,9 +1263,10 @@ dest:
 
 			if(opnd_is_reg(dst_opnd))
 			{
-				taint_regs[tainting_reg = opnd_get_reg(dst_opnd)] = 
-					(type == 0) ? 1 : (reg_status)taint_addr;
-				add_tag_eacbdx(tainting_reg, taint_regs);
+				tainting_reg = opnd_get_reg(dst_opnd);
+				add_taint_register_mark(taint_regs, tainting_reg, 
+										((type == 0)?1:(reg_status)taint_addr));
+				LOG_REG_LIST(f, taint_regs, &mc);
 			}
 
 			else if(opnd_is_memory_reference(dst_opnd))
@@ -1306,10 +1308,8 @@ dest:
 			if(opnd_is_reg(dst_opnd))
 			{
 				tainting_reg = opnd_get_reg(dst_opnd);
-				if(taint_regs[tainting_reg])
-				{
-					taint_regs[tainting_reg] = 0;
-					clear_tag_eacbdx(tainting_reg, taint_regs);
+				if(taint_regs[tainting_reg]){
+					remove_taint_register_mark(taint_regs, tainting_reg);
 					LOG_REG_LIST(f, taint_regs, &mc);
 				}
 			}
@@ -1324,7 +1324,7 @@ dest:
 		if(++nn < n2) goto dest;
 	}
 
-exit0:
+done:
 	CONSTRUCT_INSTR_END(drcontext);
 }
 

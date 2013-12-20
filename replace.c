@@ -1009,7 +1009,7 @@ enumerate_syms_cb(drsym_info_t *info, drsym_error_t status, void *data)
     size_t modoffs = info->start_offs;
 
     ASSERT(edata != NULL && edata->processed != NULL, "invalid param");
-    LOG(2, "%s: %s "PIFX"\n", __FUNCTION__, name, modoffs);
+    //LOG(2, "%s: %s "PIFX"\n", __FUNCTION__, name, modoffs);
 
     /* Using hashtable lookup to avoid linear walk of strcmp.
      * Linear walk isn't much slower now, but will become worse
@@ -1228,7 +1228,6 @@ replace_in_module(const module_data_t *mod, bool add)
 #endif
 #ifdef WINDOWS
     const char *modname = dr_module_preferred_name(mod);
-    dr_fprintf(f_global, "%s: %d\n", __FUNCTION__, module_imports_from_msvc(mod));
     if (module_imports_from_msvc(mod) &&
         (modname == NULL ||
          (!text_matches_pattern(modname, "msvcp*.dll", true/*ignore case*/) &&
@@ -1259,8 +1258,7 @@ replace_in_module(const module_data_t *mod, bool add)
      * if we find an export we can't mark as processed b/c
      * there can be other symbols of same name.
      */
-	dr_fprintf(f_global, "Step 1\n");
-    for (i=0; i<REPLACE_NUM; i++) {
+	for (i=0; i<REPLACE_NUM; i++) {
         dr_export_info_t info;
         app_pc addr = NULL;
         if (dr_get_proc_address_ex(mod->handle, replace_routine_name[i],
@@ -1297,20 +1295,19 @@ replace_in_module(const module_data_t *mod, bool add)
         }
     }
 
-	dr_fprintf(f_global, "Step 2\n");
 	for (i = 0; i < REPLACE_NUM; i++) {
         size_t modoffs;
         uint count;
         uint idx;
-        dr_fprintf(f_global, "Search %s in symcache\n", replace_routine_name[i]);
+        //dr_fprintf(f_global, "Search %s in symcache\n", replace_routine_name[i]);
         if (!edata.processed[i]) {
-            dr_fprintf(f_global, "did not find %s in symcache\n", replace_routine_name[i]);
+            //dr_fprintf(f_global, "did not find %s in symcache\n", replace_routine_name[i]);
             missing_entry = true;
         }
     }
 
 	/* step 3, some symbols are not found in symcache, lookup them in modules */
-    dr_fprintf(f_global, "Step 3\n");
+    //dr_fprintf(f_global, "Step 3\n");
     if (missing_entry) {
         /* PR 486382: look up these symbols online for all modules.
          * We rely on drsym_init() having been called during init.

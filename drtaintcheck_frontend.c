@@ -69,7 +69,7 @@
 #define LIB64_ARCH "lib64"
 
 #define DEFAULT_DR_OPS \
-    "-disable_traces -bb_single_restore_prefix -max_bb_instrs 1024 -vm_size 1024M -no_enable_reset"
+    "-disable_traces -bb_single_restore_prefix -max_bb_instrs 1024 -vm_size 768M -no_enable_reset"
 
 #define CLIENT_ID 0
 
@@ -679,6 +679,10 @@ _tmain(int argc, TCHAR *targv[])
                      cliops_sofar, len, "-lib_whitelist %s*.d?? ", buf);
         }
     }
+
+	BUFPRINT(client_ops, BUFFER_SIZE_ELEMENTS(client_ops),
+                     cliops_sofar, len,
+					 "-no_use_symcache -replace_malloc -replace_realloc ");
 
     info("----Step 0: configuring process %s----", app_name);
     errcode = dr_inject_process_create(app_name, app_argv, &inject_data);

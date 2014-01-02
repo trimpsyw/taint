@@ -170,6 +170,7 @@ app_pc app_base;
 app_pc app_end;
 char app_path[MAXIMUM_PATH];
 show_mask_t verbose;
+bool track_heap = false;
 
 #undef ELOGF
 #define ELOGF(mask, f, ...) do {   \
@@ -311,6 +312,10 @@ process_options(const char* opstr)
 			if(s = get_option_word(s, word))
 				verbose = (show_mask_t)atoi(word);
 			else break;
+		}
+		else if(strcmp(word, "-track_heap") == 0)
+		{
+			track_heap = true;
 		}
 	}
 }
@@ -1432,9 +1437,13 @@ at_call(app_pc instr_addr, app_pc target_addr)
 				dr_fprintf(f, "[In] Original address "PFX"\n", buffer_addr);
 
 				app_pc heapHandle;
-				dr_safe_read((app_pc)mc.esp+(buffer_idx-1-2)*4, 4, &heapHandle, NULL);
-				buffer_size = HeapSize(heapHandle, 0, buffer_addr);
-				dr_fprintf(f, "[In] Original size "PFX"\n", buffer_size);
+				unsigned long flags;
+				if(dr_safe_read((app_pc)mc.esp+(buffer_idx-1-2)*4, 4, &heapHandle, NULL) && 
+					dr_safe_read((app_pc)mc.esp+(buffer_idx-1-1)*4, 4, &flags, NULL))
+				{
+					buffer_size = HeapSize(heapHandle, flags, buffer_addr);
+					dr_fprintf(f, "[In] Original size "PFX"\n", buffer_size);
+				}
 			}
 			
 			dr_safe_read((app_pc)mc.esp+(out_size_idx-1)*4, 4, &data->new_size, NULL);
@@ -1445,9 +1454,13 @@ at_call(app_pc instr_addr, app_pc target_addr)
 				dr_fprintf(f, "[In] Free address "PFX"\n", buffer_addr);
 			
 				app_pc heapHandle;
-				dr_safe_read((app_pc)mc.esp+(buffer_idx-1-2)*4, 4, &heapHandle, NULL);
-				buffer_size = HeapSize(heapHandle, 0, buffer_addr);
-				dr_fprintf(f, "[In] Free size "PFX"\n", buffer_size);
+				unsigned long flags;
+				if(dr_safe_read((app_pc)mc.esp+(buffer_idx-1-2)*4, 4, &heapHandle, NULL) && 
+					dr_safe_read((app_pc)mc.esp+(buffer_idx-1-1)*4, 4, &flags, NULL))
+				{
+					buffer_size = HeapSize(heapHandle, flags, buffer_addr);
+					dr_fprintf(f, "[In] Free size "PFX"\n", buffer_size);
+				}
 			}
 		}
 	}
@@ -1877,6 +1890,10 @@ event_module_load(void *drcontext, const module_data_t *info, bool loaded)
 		for(int i = 0; i < CALL_RULES_NUM; i++){
 			if(dr_get_main_module()->start == info->start || 
 				text_matches_any_pattern(name, rules[i].modname, true)){
+					if(!track_heap && rules[i].call_type >= CALL_ALLOCATE_HEAP &&
+						rules[i].call_type <= CALL_FREE_HEAP)
+						continue;
+
 					app_pc pc = lookup_symbol(info, rules[i].function);
 					if(pc == NULL) continue;
 					

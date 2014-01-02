@@ -152,7 +152,7 @@
 				Optimization="0"
 				InlineFunctionExpansion="0"
 				AdditionalIncludeDirectories="..\..\cmake\..\include;..\..\cmake\..\ext\include;"
-				PreprocessorDefinitions="WIN32;_WINDOWS;_DEBUG;X86_32;WINDOWS;SHOW_RESULTS;SHOW_SYMBOLS;_CRT_SECURE_NO_WARNINGS;CLIENT_LIBNAME=taintchecklib;CMAKE_INTDIR=\&quot;Debug\&quot;;taintchecklib_EXPORTS"
+				PreprocessorDefinitions="USE_DRMGR;USE_DRSYMS;WIN32;_WINDOWS;_DEBUG;X86_32;WINDOWS;SHOW_RESULTS;SHOW_SYMBOLS;_CRT_SECURE_NO_WARNINGS;CLIENT_LIBNAME=taintchecklib;CMAKE_INTDIR=\&quot;Debug\&quot;;taintchecklib_EXPORTS"
 				ExceptionHandling="0"
 				RuntimeLibrary="0"
 				RuntimeTypeInfo="true"

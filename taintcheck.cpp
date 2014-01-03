@@ -154,6 +154,7 @@ static memory_list skip_list;		/* 白名单模块 */
 static memory_list process_heap;	/* 进程所有的堆空间 */
 static memory_list tainted_heap;	/* 所有被污染的堆空间 */
 static void *stats_mutex;
+static void *memory_mutex;
 static uint num_threads;
 static int tls_index;
 static hashtable_t call_routine_table;
@@ -624,11 +625,21 @@ enum memory_type_t
 	MEMORY_ON_OTHERS	= 0x11,
 };
 
+class Lock{
+public:
+	Lock(bool lock = true):lock(lock){if(lock)dr_mutex_lock(memory_mutex);}
+	~Lock(){if(lock)dr_mutex_unlock(memory_mutex);}
+private:
+	bool lock;
+};
+
 static memory_type_t 
 add_taint_memory_mark(memory_list& all, memory_list& heap, memory_list& stack, 
 					  const range& r, memory_type_t type, 
-					  app_pc bottom, app_pc top, file_t f, const char* msg)
+					  app_pc bottom, app_pc top, file_t f, const char* msg, bool lock = true)
 {
+	Lock l(lock);
+
 	all.insert(r);
 	
 	ELOGF(SHOW_SHADOW_MEMORY, f, "[+] %s [0x%x, 0x%x)\n", msg, r.start, r.end);
@@ -652,8 +663,10 @@ add_taint_memory_mark(memory_list& all, memory_list& heap, memory_list& stack,
 static memory_type_t 
 remove_taint_memory_mark(memory_list& all, memory_list& heap, memory_list& stack, 
 					  const range& r, memory_type_t type, 
-					  file_t f, const char* msg)
+					  file_t f, const char* msg, bool lock = true)
 {
+	Lock l(lock);
+	
 	if(all.remove(r.start, r.end))
 	{
 		ELOGF(SHOW_SHADOW_MEMORY, f, "[-] %s [0x%x, 0x%x)\n", msg, r.start, r.end);					
@@ -733,51 +746,58 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 	int in_size = data->buffer_size;
 	memory_list& tainted_all = data->tainted_all;
 	memory_list& tainted_stack = data->tainted_stack;
+	reg_t eax = mc->eax;
 	
-	dr_fprintf(f, "Thread %d: function return status "PFX "\n", data->thread_id, mc->eax);
+	dr_fprintf(f, "Thread %d: function return status "PFX "\n", data->thread_id, eax);
 	
 	//通过返回值判断函数调用是否失败
-	if((return_status > 0 && (int)mc->eax <= 0) || (return_status == 0 && mc->eax != 0))
+	if((return_status > 0 && (int)eax <= 0) || (return_status == 0 && eax != 0))
 	{
 		dr_fprintf(f, "Failed to call function\n");
 		goto done;
 	}
 
 	if(call_type == CALL_ALLOCATE_HEAP){
-		buffer_addr = (app_pc)mc->eax;
-		range r(buffer_addr, buffer_addr+buffer_size);
-		dr_fprintf(f, "Alloc buffer %d:"PFX"-"PFX"\n", buffer_size, r.start, r.end);
-		process_heap.insert(r);
-		goto done;
-	} else if(call_type == CALL_FREE_HEAP){
+		buffer_addr = (app_pc)eax;
 		if(buffer_addr){
 			range r(buffer_addr, buffer_addr+buffer_size);
-			process_heap.remove(r.start, r.end);
+			dr_fprintf(f, "Alloc buffer %d:"PFX"-"PFX"\n", buffer_size, r.start, r.end);
+			Lock l;
+			process_heap.insert(r);
+		}
+		goto done;
+	} else if(call_type == CALL_FREE_HEAP){
+		if(buffer_addr && buffer_size > 0){
+			range r(buffer_addr, buffer_addr+buffer_size);
 			dr_fprintf(f, "Free buffer %d:"PFX"-"PFX"\n", buffer_size, r.start, r.end);
-
+			Lock l;
+			process_heap.remove(r.start, r.end);
+			
 			//释放有污染标记的内存必须清空相关的数据结构
 			remove_taint_memory_mark(tainted_all, tainted_heap, tainted_stack, 
-									 r, MEMORY_ON_HEAP, 
-									 f, "free_buffer");
+									 r, MEMORY_ON_HEAP, f, "free_buffer", false);
 		}
 		goto done;
 	} else if(call_type == CALL_REALLOCATE_HEAP){
 		bool ori_tainted = false;
-		if(buffer_addr){
+		Lock l;
+		if(buffer_addr && buffer_size > 0){
 			range r(buffer_addr, buffer_addr+buffer_size);
-			process_heap.remove(r.start, r.end);
 			dr_fprintf(f, "Free buffer %d:"PFX"-"PFX"\n", buffer_size, r.start, r.end);
-
+			process_heap.remove(r.start, r.end);
+			
 			//释放有污染标记的内存必须清空相关的数据结构
 			ori_tainted = remove_taint_memory_mark(tainted_all, tainted_heap, 
 								tainted_stack, r, MEMORY_ON_HEAP, 
-								f, "reallocateheap") == MEMORY_ON_HEAP;
+								f, "reallocateheap", false) == MEMORY_ON_HEAP;
 		}
-		app_pc new_addr = (app_pc)mc->eax;
+		app_pc new_addr = (app_pc)eax;
 		int new_size = data->new_size;
+		if(new_size<=0 || !new_addr)	goto done;
+
 		range r(new_addr, new_addr+new_size);
-		process_heap.insert(r);
 		dr_fprintf(f, "Alloc buffer %d:"PFX"-"PFX"\n", new_size, r.start, r.end);
+		process_heap.insert(r);
 		
 		//之前的内存就是污染的，由于realloc将会复制原先内存，所以必须传播污染状态到新内存
 		if(ori_tainted){
@@ -787,7 +807,7 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 			add_taint_memory_mark(tainted_all, tainted_heap, tainted_stack, 
 								  r, MEMORY_ON_HEAP, 
 								  data->stack_bottom, (app_pc)mc->esp, 
-								  f, "reallocateheap");
+								  f, "reallocateheap", false);
 		}
 		
 		goto done;
@@ -1403,6 +1423,7 @@ at_call(app_pc instr_addr, app_pc target_addr)
 			out_size_idx = e->rule.out_size_idx;
 			out_size_ref = e->rule.out_size_is_ref;
 			succeed_status = e->rule.succeed_status;
+			buffer_addr = 0;
 
 			dr_fprintf(f,	"-----------------Thread %d-----------------------\n"
 							PFX" call %s:!%s "PFX " and return "PFX"\n"
@@ -2007,6 +2028,7 @@ event_exit(void)
 	drmgr_exit();
 #endif
 	dr_mutex_destroy(stats_mutex);
+	dr_mutex_destroy(memory_mutex);
 
 	dr_fprintf(f_global, "\n\n====== heap memory ======\n");
 	for(memory_list::iterator it = process_heap.begin();it != process_heap.end(); it++)
@@ -2026,6 +2048,7 @@ dr_init(client_id_t id)
 	process_options(opstr = dr_get_options(client_id));
 	appnm = dr_get_application_name();
 	stats_mutex = dr_mutex_create();
+	memory_mutex = dr_mutex_create();
 
 #ifdef WINDOWS
 	TEB* teb = get_TEB();

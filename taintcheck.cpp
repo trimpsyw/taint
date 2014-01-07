@@ -1440,17 +1440,19 @@ at_call(app_pc instr_addr, app_pc target_addr)
 			soffset = (app_pc)mc.esp+(in_size_idx-1)*4;
 			outoffset = (app_pc)mc.esp+(out_size_idx-1)*4;
 
-			dr_safe_read(boffset, 4, &buffer_addr, NULL);
+			if(!dr_safe_read(boffset, 4, &buffer_addr, NULL))	goto done;
 			dr_fprintf(f, "[In] Buffer address "PFX"\n", buffer_addr);
 
-			dr_safe_read(soffset, 4, &buffer_size, NULL);
+			if(!dr_safe_read(soffset, 4, &buffer_size, NULL))	goto done;
 			dr_fprintf(f, "[In] Buffer size "PFX"\n", buffer_size);
 
-			if(out_size_ref)//获取out size内存地址
-				dr_safe_read(outoffset, 4, &data->out_size_addr, NULL);
+			//获取out size内存地址
+			if(out_size_ref && !dr_safe_read(outoffset, 4, &data->out_size_addr, NULL))
+				goto done;
 
 		} else if(call_type == CALL_ALLOCATE_HEAP){
-			dr_safe_read((app_pc)mc.esp+(in_size_idx-1)*4, 4, &buffer_size, NULL);
+			if(!dr_safe_read((app_pc)mc.esp+(in_size_idx-1)*4, 4, &buffer_size, NULL))
+				goto done;
 			dr_fprintf(f, "[In] Allocate size "PFX"\n", buffer_size);
 		} else if(call_type == CALL_REALLOCATE_HEAP){
 			bool t = dr_safe_read((app_pc)mc.esp+(buffer_idx-1)*4, 4, &buffer_addr, NULL);
@@ -1486,6 +1488,7 @@ at_call(app_pc instr_addr, app_pc target_addr)
 		}
 	}
 
+done:
 	if(call_type == CALL_UNDEFINED)
 	{
 		if(funcs.size()==0 && target_addr>=app_base && target_addr<=app_end)

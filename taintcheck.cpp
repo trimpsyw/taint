@@ -282,9 +282,7 @@ within_global_stack(app_pc pc, app_pc stack_bottom, app_pc stack_top)
 static bool
 within_heap(app_pc pc)
 {
-	if(process_heap.size() && process_heap.find(pc))
-		return true;		
-	return false;
+	return process_heap.find(pc);
 }
 
 #define MAX_OPTION_LEN DR_MAX_OPTIONS_LENGTH
@@ -555,17 +553,6 @@ mem_disassemble_to_buffer(char* buf, int n, byte* mem)
 		dr_fprintf(f, "\n");											\
 	}
 
-static bool 
-process_stack_shrink(memory_list& tainted_all, memory_list& tainted_stack,
-					 app_pc stack_top, app_pc current_esp)
-{
-	if(tainted_stack.remove(stack_top, current_esp))
-	{
-		tainted_all.remove(stack_top, current_esp);
-		return true;
-	}
-	return false;
-}
 
 static bool 
 is_tags_clean(reg_status* regs)
@@ -632,6 +619,19 @@ public:
 private:
 	bool lock;
 };
+
+static bool 
+process_stack_shrink(memory_list& all, memory_list& stack,
+					 app_pc stack_top, app_pc current_esp)
+{
+	Lock l;
+	if(stack.remove(stack_top, current_esp))
+	{
+		all.remove(stack_top, current_esp);
+		return true;
+	}
+	return false;
+}
 
 static memory_type_t 
 add_taint_memory_mark(memory_list& all, memory_list& heap, memory_list& stack, 

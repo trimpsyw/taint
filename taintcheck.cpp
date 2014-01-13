@@ -32,6 +32,7 @@ typedef enum{
 	SHOW_PROPAGATION	= 0x08,
 	SHOW_TAINTING		= 0x10,
 	SHOW_SHADOW_MEMORY	= 0x20,
+	SHOW_PROCESSING		= 0x40,
 }show_mask_t;
 
 #ifdef WINDOWS
@@ -117,6 +118,14 @@ typedef struct call_routine_entry_t {
 typedef std::vector<std::string> function_tables;
 typedef unsigned int reg_status;
 
+#ifdef USE_DRMGR
+typedef struct shared_data_t
+{
+	int skip;
+	int insert_count;
+}shared_data;
+#endif
+
 typedef struct thread_data_t
 {
 	file_t f;					/* 日志文件fd */
@@ -137,6 +146,9 @@ typedef struct thread_data_t
 	int instr_count;			/* 指令块计数 */
 	app_pc stack_bottom;		/* 栈底部 */
 	app_pc stack_top;			/* 栈顶最小值 (stack_bottom > stack_top)*/
+#ifdef USE_DRMGR
+	shared_data shared;			/* 在drmgr_register_bb_instrumentation_ex_event的注册函数传递 */
+#endif
 	reg_status taint_regs[DR_REG_LAST_ENUM];	/* 寄存器污染状态*/
 
 	int enter_function;
@@ -185,6 +197,7 @@ bool track_heap = false;
 	{stmt}                        \
 } while (0)
 
+#define LOG_MAIN(f, ...) dr_fprintf(f, __VA_ARGS__)
 
 static void
 call_routine_entry_free(void* p)
@@ -369,7 +382,7 @@ create_f_globalfile(const char* logdir)
 
     f_global = open_logfile("global", true/*pid suffix*/, -1);
 
-	dr_fprintf(f_global, "Dr. TaintCheck built on %s\n", build_date);
+	LOG_MAIN(f_global, "Dr. TaintCheck built on %s\n", build_date);
 }
 
 static file_t
@@ -377,11 +390,11 @@ create_thread_logfile(void *drcontext)
 {
     file_t f;
     uint which_thread = atomic_add32_return_sum((volatile int *)&num_threads, 1) - 1;
-    dr_fprintf(f_global, "new thread #%d id=%d\n",
+    LOG_MAIN(f_global, "new thread #%d id=%d\n",
           which_thread, dr_get_thread_id(drcontext));
 
     f = open_logfile("thread", false, which_thread/*tid suffix*/);
-    dr_fprintf(f, "log for thread %d\n", dr_get_thread_id(drcontext));
+    LOG_MAIN(f, "log for thread %d\n", dr_get_thread_id(drcontext));
 
     return f;
 }
@@ -390,11 +403,11 @@ static void
 print_function_tables(file_t f, const char* msg, function_tables& funcs)
 {
 	DOLOG(SHOW_FUNC_TREE, {
-		dr_fprintf(f, "%s ", msg);
+		LOG_MAIN(f, "%s ", msg);
 		for(function_tables::iterator it = funcs.begin();
 			it != funcs.end(); it++)
-			dr_fprintf(f, "%s:", it->c_str());
-		dr_fprintf(f, "\n");
+			LOG_MAIN(f, "%s:", it->c_str());
+		LOG_MAIN(f, "\n");
 	});
 }
 
@@ -405,9 +418,9 @@ print_instr(void* drcontext, file_t f, instr_t* instr, app_pc pc)
 		int n1 = instr_num_srcs(instr);
 		int n2 = instr_num_dsts(instr);
 
-		dr_fprintf(f, PFX" ",  pc);
+		LOG_MAIN(f, PFX" ",  pc);
 		instr_disassemble(drcontext, instr, f);
-		dr_fprintf(f, "\t[%d, %d]\n",  n1, n2);
+		LOG_MAIN(f, "\t[%d, %d]\n",  n1, n2);
 	});
 }
 
@@ -475,61 +488,61 @@ static void
 print_propagation(file_t f, int n1, int n2, instr_t* instr, dr_mcontext_t *mc)
 {
 	DOLOG(SHOW_PROPAGATION, {
-		if(n1 > 0) dr_fprintf(f, "src_opnd(");
+		if(n1 > 0) LOG_MAIN(f, "src_opnd(");
 		for(int i = 0; i < n1; i++)
 		{
-			if(i > 0) dr_fprintf(f, ", ");
+			if(i > 0) LOG_MAIN(f, ", ");
 			opnd_t src_opnd = instr_get_src(instr, i);
 			if(opnd_is_reg(src_opnd))
-				dr_fprintf(f, "reg:%d",  opnd_get_reg(src_opnd));
+				LOG_MAIN(f, "reg:%d",  opnd_get_reg(src_opnd));
 			else if(opnd_is_memory_reference(src_opnd))
-				dr_fprintf(f, "mem:0x%08x", opnd_compute_address(src_opnd, mc));
+				LOG_MAIN(f, "mem:0x%08x", opnd_compute_address(src_opnd, mc));
 			else if(opnd_is_pc(src_opnd))
-				dr_fprintf(f, "pc:0x%08x", opnd_get_pc(src_opnd));//模块内部调用
+				LOG_MAIN(f, "pc:0x%08x", opnd_get_pc(src_opnd));//模块内部调用
 			else if(opnd_is_abs_addr(src_opnd))
-				dr_fprintf(f, "abs:0x%08x", opnd_get_addr(src_opnd));
+				LOG_MAIN(f, "abs:0x%08x", opnd_get_addr(src_opnd));
 			else if(opnd_is_immed_int(src_opnd))
-				dr_fprintf(f, "imm:%d", opnd_get_immed_int(src_opnd));
+				LOG_MAIN(f, "imm:%d", opnd_get_immed_int(src_opnd));
 			/*else if(opnd_is_base_disp(src_opnd))
-				dr_fprintf(f, "%d:base+disp %d ", i);
+				LOG_MAIN(f, "%d:base+disp %d ", i);
 			else if(opnd_is_instr(src_opnd))
-				dr_fprintf(f, "%d:instr %d ", i);*/
+				LOG_MAIN(f, "%d:instr %d ", i);*/
 		}
-		if(n1 > 0) dr_fprintf(f, ") ");
+		if(n1 > 0) LOG_MAIN(f, ") ");
 
-		if(n2 > 0) dr_fprintf(f, "dst_opnd(");
+		if(n2 > 0) LOG_MAIN(f, "dst_opnd(");
 		for(int i = 0; i < n2; i++)
 		{
-			if(i > 0) dr_fprintf(f, ", ");
+			if(i > 0) LOG_MAIN(f, ", ");
 			opnd_t dst_opnd = instr_get_dst(instr, i);
 			if(opnd_is_reg(dst_opnd))
-				dr_fprintf(f, "reg:%d",  opnd_get_reg(dst_opnd));
+				LOG_MAIN(f, "reg:%d",  opnd_get_reg(dst_opnd));
 			else if(opnd_is_memory_reference(dst_opnd))
-				dr_fprintf(f, "mem:0x%08x", opnd_compute_address(dst_opnd, mc));
+				LOG_MAIN(f, "mem:0x%08x", opnd_compute_address(dst_opnd, mc));
 			else if(opnd_is_pc(dst_opnd))
-				dr_fprintf(f, "pc:0x%08x", opnd_get_pc(dst_opnd));
+				LOG_MAIN(f, "pc:0x%08x", opnd_get_pc(dst_opnd));
 			else if(opnd_is_abs_addr(dst_opnd))
-				dr_fprintf(f, "abs:0x%08x", opnd_get_addr(dst_opnd));
+				LOG_MAIN(f, "abs:0x%08x", opnd_get_addr(dst_opnd));
 			else if(opnd_is_immed_int(dst_opnd))
-				dr_fprintf(f, "imm:%d", opnd_get_immed_int(dst_opnd));
+				LOG_MAIN(f, "imm:%d", opnd_get_immed_int(dst_opnd));
 			/*else if(opnd_is_base_disp(dst_opnd))
-				dr_fprintf(f, "%d:base+disp %d ", i);
+				LOG_MAIN(f, "%d:base+disp %d ", i);
 			else if(opnd_is_instr(dst_opnd))
-				dr_fprintf(f, "%d:instr %d ", i);*/
+				LOG_MAIN(f, "%d:instr %d ", i);*/
 		}
-		if(n2 > 0) dr_fprintf(f, ")");
+		if(n2 > 0) LOG_MAIN(f, ")");
 
-		if(n1 || n2) dr_fprintf(f, "\n");
+		if(n1 || n2) LOG_MAIN(f, "\n");
 	});
 }
 
 #define LOG_REG_LIST(f, regs, mc)							\
 	if(verbose&SHOW_TAINTING){								\
-		dr_fprintf(f, "\tregs:");							\
+		LOG_MAIN(f, "\tregs:");							\
 		for(int i = DR_REG_EAX; i <= DR_REG_EDI; i++)		\
-			if(regs[i])	dr_fprintf(f, "("PFX")", (regs[i]==1)?reg_get_value(i, mc):regs[i]);	\
-			else dr_fprintf(f, "(nil)");					\
-		dr_fprintf(f, "\n");								\
+			if(regs[i])	LOG_MAIN(f, "("PFX")", (regs[i]==1)?reg_get_value(i, mc):regs[i]);	\
+			else LOG_MAIN(f, "(nil)");					\
+		LOG_MAIN(f, "\n");								\
 	}
 
 #define MAX_SHOW_BINARY_MEMORY 32
@@ -546,11 +559,11 @@ mem_disassemble_to_buffer(char* buf, int n, byte* mem)
 #define LOG_MEMORY_LIST(s, f, m)										\
 	if(verbose&SHOW_SHADOW_MEMORY){										\
 		static char buffer[MAX_SHOW_BINARY_MEMORY*3+1] = {0};			\
-		dr_fprintf(f, "==== %s(%d) ====\n", s, m.size());							\
+		LOG_MAIN(f, "==== %s(%d) ====\n", s, m.size());							\
 		for(memory_list::iterator it = m.begin(); it != m.end(); it++){	\
 			mem_disassemble_to_buffer(buffer, it->end-it->start, (byte*)it->start);	\
-			dr_fprintf(f, "[0x%x, 0x%x) %s\n", it->start, it->end, buffer);}		\
-		dr_fprintf(f, "\n");											\
+			LOG_MAIN(f, "[0x%x, 0x%x) %s\n", it->start, it->end, buffer);}		\
+		LOG_MAIN(f, "\n");											\
 	}
 
 
@@ -748,12 +761,10 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 	memory_list& tainted_stack = data->tainted_stack;
 	reg_t eax = mc->eax;
 	
-	dr_fprintf(f, "Thread %d: function return status "PFX "\n", data->thread_id, eax);
-	
 	//通过返回值判断函数调用是否失败
 	if((return_status > 0 && (int)eax <= 0) || (return_status == 0 && eax != 0))
 	{
-		dr_fprintf(f, "Failed to call function\n");
+		ELOGF(SHOW_SHADOW_MEMORY, f, "Thread %d: Failed to call function with status "PFX "\n", data->thread_id, eax);
 		goto done;
 	}
 
@@ -761,7 +772,7 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 		buffer_addr = (app_pc)eax;
 		if(buffer_addr){
 			range r(buffer_addr, buffer_addr+buffer_size);
-			dr_fprintf(f, "Alloc buffer %d:"PFX"-"PFX"\n", buffer_size, r.start, r.end);
+			//LOG_MAIN(f, "Alloc buffer %d:"PFX"-"PFX"\n", buffer_size, r.start, r.end);
 			Lock l;
 			process_heap.insert(r);
 		}
@@ -769,7 +780,7 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 	} else if(call_type == CALL_FREE_HEAP){
 		if(buffer_addr && buffer_size > 0){
 			range r(buffer_addr, buffer_addr+buffer_size);
-			dr_fprintf(f, "Free buffer %d:"PFX"-"PFX"\n", buffer_size, r.start, r.end);
+			//LOG_MAIN(f, "Free buffer %d:"PFX"-"PFX"\n", buffer_size, r.start, r.end);
 			Lock l;
 			process_heap.remove(r.start, r.end);
 			
@@ -783,7 +794,7 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 		Lock l;
 		if(buffer_addr && buffer_size > 0){
 			range r(buffer_addr, buffer_addr+buffer_size);
-			dr_fprintf(f, "Free buffer %d:"PFX"-"PFX"\n", buffer_size, r.start, r.end);
+			//LOG_MAIN(f, "Free buffer %d:"PFX"-"PFX"\n", buffer_size, r.start, r.end);
 			process_heap.remove(r.start, r.end);
 			
 			//释放有污染标记的内存必须清空相关的数据结构
@@ -796,7 +807,7 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 		if(new_size<=0 || !new_addr)	goto done;
 
 		range r(new_addr, new_addr+new_size);
-		dr_fprintf(f, "Alloc buffer %d:"PFX"-"PFX"\n", new_size, r.start, r.end);
+		//LOG_MAIN(f, "Alloc buffer %d:"PFX"-"PFX"\n", new_size, r.start, r.end);
 		process_heap.insert(r);
 		
 		//之前的内存就是污染的，由于realloc将会复制原先内存，所以必须传播污染状态到新内存
@@ -837,7 +848,7 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 
 	if(call_type == CALL_TAINTED_NORMAL_BUFFER)//普通的字符串，无需特别处理
 	{
-		dr_fprintf(f, "[Out] Read Size "PFX"\n", buffer_size);
+		ELOGF(SHOW_SHADOW_MEMORY, f, "[Out] Read Size "PFX"\n", buffer_size);
 		range r(buffer_addr, buffer_addr+buffer_size);
 		add_taint_memory_mark(tainted_all, tainted_heap, tainted_stack, 
 							  r, MEMORY_ON_OTHERS, data->stack_bottom, 
@@ -855,17 +866,17 @@ taint_seed(app_pc pc, void* drcontext, dr_mcontext_t* mc)
 				continue;
 			if(i > 0)	value = buffer_size - n;
 
-			dr_fprintf(f, "[Out] len "PFX"\n", value);
+			ELOGF(SHOW_SHADOW_MEMORY, f, "[Out] len "PFX"\n", value);
 
 			n += (size_t)value;
 
 			if(!dr_safe_read(buffer_addr+i*8+4, 4, &addr, NULL) || addr == 0)
 				continue;
-			dr_fprintf(f, "[Out] buf "PFX"\n", addr);
+			ELOGF(SHOW_SHADOW_MEMORY, f, "[Out] buf "PFX"\n", addr);
 
 			if(in_size == 1 || (in_size == 2 && i > 0))
 			{
-				dr_fprintf(f, "[Out] Taint memory "PFX" %d\n", addr, value);
+				ELOGF(SHOW_SHADOW_MEMORY, f, "[Out] Taint memory "PFX" %d\n", addr, value);
 				range r(addr, addr+value);
 				add_taint_memory_mark(tainted_all, tainted_heap, tainted_stack, 
 										r, MEMORY_ON_OTHERS, data->stack_bottom, 
@@ -939,7 +950,7 @@ taint_alert(instr_t* instr, app_pc target_addr, void* drcontext, dr_mcontext_t *
 		else
 			dr_snprintf(msg, sizeof(msg), "Calling tainted reg %d $%08x\n", taint_reg, target_addr);
 
-		dr_fprintf(f, msg);
+		LOG_MAIN(f, msg);
 	}
 
 	return is_taint;
@@ -1276,16 +1287,16 @@ dest:
 		if(src_tainted)//污染标记
 		{
 			DOLOG(SHOW_TAINTING, {
-				dr_fprintf(f, "\t$$$$ taint ");
+				LOG_MAIN(f, "\t$$$$ taint ");
 				if(type == 0)
 				{
 					opnd_disassemble(drcontext, src_opnd, f);
-					dr_fprintf(f, "("PFX")", reg_get_value(taint_reg, &mc));
+					LOG_MAIN(f, "("PFX")", reg_get_value(taint_reg, &mc));
 				}
 				else if(type == 1)
-					dr_fprintf(f, "$mem:0x%08x ", taint_addr);
+					LOG_MAIN(f, "$mem:0x%08x ", taint_addr);
 				else if(type == 2)
-					dr_fprintf(f, "mem:0x%08x ", taint_addr);
+					LOG_MAIN(f, "mem:0x%08x ", taint_addr);
 			});
 
 			if(opnd_is_reg(dst_opnd))
@@ -1322,12 +1333,12 @@ dest:
 			DOLOG(SHOW_TAINTING, {	
 				if(tainting_addr == 0)
 				{
-					dr_fprintf(f, "---> ");
+					LOG_MAIN(f, "---> ");
 					opnd_disassemble(drcontext, dst_opnd, f);
 					LOG_REG_LIST(f, taint_regs,  &mc);
 				}
 				else
-					dr_fprintf(f, "---> mem:0x%08x\n", tainting_addr);
+					LOG_MAIN(f, "---> mem:0x%08x\n", tainting_addr);
 			});
 		} 
 		else//清除标记
@@ -1398,13 +1409,13 @@ at_call(app_pc instr_addr, app_pc target_addr)
 	int t1 = lookup_symbols_by_pc(instr_addr, modname1, func1, MAX_SYM_RESULT);
 	int t2 = lookup_symbols_by_pc(target_addr, modname2, func2, MAX_SYM_RESULT);
 	DOLOG(SHOW_SYM,
-		if(t1 < 0)	dr_fprintf(f, "[CALL @ ] "PFX" unknown ??:0\n", instr_addr);
-		else if(t1 > 0) dr_fprintf(f, "[CALL @ ] "PFX" %s:!%s\n", instr_addr, modname1, func1);
-		else dr_fprintf(f, "[CALL @ ] "PFX" %s:!??\n", instr_addr, modname1);
+		if(t1 < 0)	LOG_MAIN(f, "[CALL @ ] "PFX" unknown ??:0\n", instr_addr);
+		else if(t1 > 0) LOG_MAIN(f, "[CALL @ ] "PFX" %s:!%s\n", instr_addr, modname1, func1);
+		else LOG_MAIN(f, "[CALL @ ] "PFX" %s:!??\n", instr_addr, modname1);
 
-		if(t2 < 0)	dr_fprintf(f, "\tInto "PFX" unknown ??:0\n", target_addr);
-		else if(t2 > 0) dr_fprintf(f, "\tInto "PFX" %s:!%s\n", target_addr, modname2, func2);
-		else dr_fprintf(f, "\tInto "PFX" %s:!??\n", target_addr, modname2);
+		if(t2 < 0)	LOG_MAIN(f, "\tInto "PFX" unknown ??:0\n", target_addr);
+		else if(t2 > 0) LOG_MAIN(f, "\tInto "PFX" %s:!%s\n", target_addr, modname2, func2);
+		else LOG_MAIN(f, "\tInto "PFX" %s:!??\n", target_addr, modname2);
 		);
 
 	call_address = instr_addr;
@@ -1414,37 +1425,38 @@ at_call(app_pc instr_addr, app_pc target_addr)
 	if(call_type == CALL_UNDEFINED){
 		call_routine_entry *e;
 		e = (call_routine_entry*)hashtable_lookup(&call_routine_table, target_addr);
-		if(e!= NULL){
-			call_type = e->rule.call_type;
-			call_address = instr_addr;
-			return_address = instr_addr + length;
-			buffer_idx = e->rule.buffer_id;
-			in_size_idx = e->rule.in_size_idx;
-			out_size_idx = e->rule.out_size_idx;
-			out_size_ref = e->rule.out_size_is_ref;
-			succeed_status = e->rule.succeed_status;
-			buffer_addr = 0;
-
-			dr_fprintf(f,	"-----------------Thread %d-----------------------\n"
-							PFX" call %s:!%s "PFX " and return "PFX"\n"
-							"-------------------------------------------\n", 
-							data->thread_id, 
-							instr_addr, e->modname, e->function, target_addr, return_address);
-		}
-
+		if(e== NULL) goto done;
+	
+		call_type = e->rule.call_type;
+		call_address = instr_addr;
+		return_address = instr_addr + length;
+		buffer_idx = e->rule.buffer_id;
+		in_size_idx = e->rule.in_size_idx;
+		out_size_idx = e->rule.out_size_idx;
+		out_size_ref = e->rule.out_size_is_ref;
+		succeed_status = e->rule.succeed_status;
+		buffer_addr = 0;
+	
 		if(call_type == CALL_TAINTED_NORMAL_BUFFER ||
 			call_type == CALL_TAINTED_NETWORK_BUFFER){
 			app_pc boffset, soffset, outoffset;
+
+			ELOGF(SHOW_SHADOW_MEMORY, f, 
+				"-----------------Thread %d-----------------\n"
+				PFX" call %s:!%s "PFX " and return "PFX"\n"
+				"-------------------------------------------\n", 
+				data->thread_id, 
+				instr_addr, e->modname, e->function, target_addr, return_address);
 
 			boffset = (app_pc)mc.esp+(buffer_idx-1)*4;
 			soffset = (app_pc)mc.esp+(in_size_idx-1)*4;
 			outoffset = (app_pc)mc.esp+(out_size_idx-1)*4;
 
 			if(!dr_safe_read(boffset, 4, &buffer_addr, NULL))	goto done;
-			dr_fprintf(f, "[In] Buffer address "PFX"\n", buffer_addr);
+			ELOGF(SHOW_SHADOW_MEMORY, f, "[In] Buffer address "PFX"\n", buffer_addr);
 
 			if(!dr_safe_read(soffset, 4, &buffer_size, NULL))	goto done;
-			dr_fprintf(f, "[In] Buffer size "PFX"\n", buffer_size);
+			ELOGF(SHOW_SHADOW_MEMORY, f, "[In] Buffer size "PFX"\n", buffer_size);
 
 			//获取out size内存地址
 			if(out_size_ref && !dr_safe_read(outoffset, 4, &data->out_size_addr, NULL))
@@ -1453,11 +1465,11 @@ at_call(app_pc instr_addr, app_pc target_addr)
 		} else if(call_type == CALL_ALLOCATE_HEAP){
 			if(!dr_safe_read((app_pc)mc.esp+(in_size_idx-1)*4, 4, &buffer_size, NULL))
 				goto done;
-			dr_fprintf(f, "[In] Allocate size "PFX"\n", buffer_size);
+			//LOG_MAIN(f, "[In] Allocate size "PFX"\n", buffer_size);
 		} else if(call_type == CALL_REALLOCATE_HEAP){
 			bool t = dr_safe_read((app_pc)mc.esp+(buffer_idx-1)*4, 4, &buffer_addr, NULL);
 			if(t && buffer_addr){
-				dr_fprintf(f, "[In] Original address "PFX"\n", buffer_addr);
+				//LOG_MAIN(f, "[In] Original address "PFX"\n", buffer_addr);
 
 				app_pc heapHandle;
 				unsigned long flags;
@@ -1465,16 +1477,16 @@ at_call(app_pc instr_addr, app_pc target_addr)
 					dr_safe_read((app_pc)mc.esp+(buffer_idx-1-1)*4, 4, &flags, NULL))
 				{
 					buffer_size = HeapSize(heapHandle, flags, buffer_addr);
-					dr_fprintf(f, "[In] Original size "PFX"\n", buffer_size);
+					//LOG_MAIN(f, "[In] Original size "PFX"\n", buffer_size);
 				}
 			}
 			
 			dr_safe_read((app_pc)mc.esp+(out_size_idx-1)*4, 4, &data->new_size, NULL);
-			dr_fprintf(f, "[In] ReAllocate size "PFX"\n", data->new_size);
+			//LOG_MAIN(f, "[In] ReAllocate size "PFX"\n", data->new_size);
 		} else if(call_type == CALL_FREE_HEAP){
 			bool t = dr_safe_read((app_pc)mc.esp+(buffer_idx-1)*4, 4, &buffer_addr, NULL);
 			if(t && buffer_addr){	
-				dr_fprintf(f, "[In] Free address "PFX"\n", buffer_addr);
+				//LOG_MAIN(f, "[In] Free address "PFX"\n", buffer_addr);
 			
 				app_pc heapHandle;
 				unsigned long flags;
@@ -1482,7 +1494,7 @@ at_call(app_pc instr_addr, app_pc target_addr)
 					dr_safe_read((app_pc)mc.esp+(buffer_idx-1-1)*4, 4, &flags, NULL))
 				{
 					buffer_size = HeapSize(heapHandle, flags, buffer_addr);
-					dr_fprintf(f, "[In] Free size "PFX"\n", buffer_size);
+					//LOG_MAIN(f, "[In] Free size "PFX"\n", buffer_size);
 				}
 			}
 		}
@@ -1548,13 +1560,13 @@ at_return(app_pc instr_addr, app_pc target_addr)
 	int t1 = lookup_symbols_by_pc(instr_addr, modname1, func1, MAX_SYM_RESULT);
 	int t2 = lookup_symbols_by_pc(target_addr, modname2, func2, MAX_SYM_RESULT);
 	DOLOG(SHOW_SYM,
-		if(t1 < 0)	dr_fprintf(f, "[RETURN @ ] "PFX" unknown ??:0\n", instr_addr);
-		else if(t1 > 0) dr_fprintf(f, "[RETURN @ ] "PFX" %s:!%s\n", instr_addr, modname1, func1);
-		else dr_fprintf(f, "[RETURN @ ] "PFX" %s:!??\n", instr_addr, modname1);
+		if(t1 < 0)	LOG_MAIN(f, "[RETURN @ ] "PFX" unknown ??:0\n", instr_addr);
+		else if(t1 > 0) LOG_MAIN(f, "[RETURN @ ] "PFX" %s:!%s\n", instr_addr, modname1, func1);
+		else LOG_MAIN(f, "[RETURN @ ] "PFX" %s:!??\n", instr_addr, modname1);
 
-		if(t2 < 0)	dr_fprintf(f, "\tInto "PFX" unknown ??:0\n", target_addr);
-		else if(t2 > 0) dr_fprintf(f, "\tInto "PFX" %s:!%s\n", target_addr, modname2, func2);
-		else dr_fprintf(f, "\tInto "PFX" %s:!??\n", target_addr, modname2);
+		if(t2 < 0)	LOG_MAIN(f, "\tInto "PFX" unknown ??:0\n", target_addr);
+		else if(t2 > 0) LOG_MAIN(f, "\tInto "PFX" %s:!%s\n", target_addr, modname2, func2);
+		else LOG_MAIN(f, "\tInto "PFX" %s:!??\n", target_addr, modname2);
 		);
 
 
@@ -1595,13 +1607,13 @@ at_jmp(app_pc instr_addr, app_pc target_addr)
 	int t2 = lookup_symbols_by_pc(target_addr, modname2, func2, MAX_SYM_RESULT);
 
 	DOLOG(SHOW_SYM,
-		if(t1 < 0)	dr_fprintf(f, "[JMP @ ] "PFX" unknown ??:0\n", instr_addr);
-		else if(t1 > 0) dr_fprintf(f, "[JMP @ ] "PFX" %s:!%s\n", instr_addr, modname1, func1);
-		else dr_fprintf(f, "[JMP @ ] "PFX" %s:!??\n", instr_addr, modname1);
+		if(t1 < 0)	LOG_MAIN(f, "[JMP @ ] "PFX" unknown ??:0\n", instr_addr);
+		else if(t1 > 0) LOG_MAIN(f, "[JMP @ ] "PFX" %s:!%s\n", instr_addr, modname1, func1);
+		else LOG_MAIN(f, "[JMP @ ] "PFX" %s:!??\n", instr_addr, modname1);
 
-		if(t2 < 0)	dr_fprintf(f, "\tInto "PFX" unknown ??:0\n", target_addr);
-		else if(t2 > 0) dr_fprintf(f, "\tInto "PFX" %s:!%s\n", target_addr, modname2, func2);
-		else dr_fprintf(f, "\tInto "PFX" %s:!??\n", target_addr, modname2);
+		if(t2 < 0)	LOG_MAIN(f, "\tInto "PFX" unknown ??:0\n", target_addr);
+		else if(t2 > 0) LOG_MAIN(f, "\tInto "PFX" %s:!%s\n", target_addr, modname2, func2);
+		else LOG_MAIN(f, "\tInto "PFX" %s:!??\n", target_addr, modname2);
 		);
 
 	if(data->funcs.size())
@@ -1636,13 +1648,13 @@ at_jmp_ind(app_pc instr_addr, app_pc target_addr)
 	int t1 = lookup_symbols_by_pc(instr_addr, modname1, func1, MAX_SYM_RESULT);
 	int t2 = lookup_symbols_by_pc(target_addr, modname2, func2, MAX_SYM_RESULT);
 	DOLOG(SHOW_SYM,
-		if(t1 < 0)	dr_fprintf(f, "[JMPInd @ ] "PFX" unknown ??:0\n", instr_addr);
-		else if(t1 > 0) dr_fprintf(f, "[JMPInd @ ] "PFX" %s:!%s\n", instr_addr, modname1, func1);
-		else dr_fprintf(f, "[JMPInd @ ] "PFX" %s:!??\n", instr_addr, modname1);
+		if(t1 < 0)	LOG_MAIN(f, "[JMPInd @ ] "PFX" unknown ??:0\n", instr_addr);
+		else if(t1 > 0) LOG_MAIN(f, "[JMPInd @ ] "PFX" %s:!%s\n", instr_addr, modname1, func1);
+		else LOG_MAIN(f, "[JMPInd @ ] "PFX" %s:!??\n", instr_addr, modname1);
 
-		if(t2 < 0)	dr_fprintf(f, "\tInto "PFX" unknown ??:0\n", target_addr);
-		else if(t2 > 0) dr_fprintf(f, "\tInto "PFX" %s:!%s\n", target_addr, modname2, func2);
-		else dr_fprintf(f, "\tInto "PFX" %s:!??\n", target_addr, modname2);
+		if(t2 < 0)	LOG_MAIN(f, "\tInto "PFX" unknown ??:0\n", target_addr);
+		else if(t2 > 0) LOG_MAIN(f, "\tInto "PFX" %s:!%s\n", target_addr, modname2, func2);
+		else LOG_MAIN(f, "\tInto "PFX" %s:!??\n", target_addr, modname2);
 		);
 }
 
@@ -1705,7 +1717,7 @@ event_basic_block(void *drcontext, void *tag, instrlist_t *bb,
 	for (instr = instrlist_first(bb); instr != NULL; instr = instr_get_next(instr))
 		instr_count++;
 	
-	dr_fprintf(f, "\nin dr_basic_block #%d (tag="PFX") esp="PFX" instr_count=%d\n", 
+	ELOGF(SHOW_PROCESSING, f, "\nin dr_basic_block #%d (tag="PFX") esp="PFX" instr_count=%d\n", 
 			block_cnt, tag, mc.esp, instr_count);
 
 	for (instr = instrlist_first(bb); instr != NULL; instr =  instr_get_next(instr)) {
@@ -1741,17 +1753,12 @@ event_basic_block(void *drcontext, void *tag, instrlist_t *bb,
     return DR_EMIT_DEFAULT;
 }
 #else
-typedef struct shared_data_t
-{
-	int skip;
-	int insert_count;
-}shared_data;
-
 static dr_emit_flags_t
 event_bb_app2app(void *drcontext, void *tag, instrlist_t *bb,
                  bool for_trace, bool translating, OUT void **user_data)
 {
-	shared_data* sd = (shared_data*)dr_thread_alloc(drcontext, sizeof(*sd));
+	thread_data* data = (thread_data*)drmgr_get_tls_field(drcontext, tls_index);
+	shared_data* sd = &data->shared;
     memset(sd, 0, sizeof(*sd));
     *user_data = (void *)sd;
 
@@ -1808,7 +1815,7 @@ event_bb_analysis(void *drcontext, void *tag, instrlist_t *bb,
 		pc += instr_length(drcontext, instr);
 	}
 	
-	dr_fprintf(f, "\nin dr_basic_block #%d (tag="PFX") esp="PFX" instr_count=%d\n", 
+	ELOGF(SHOW_PROCESSING, f, "\nin dr_basic_block #%d (tag="PFX") esp="PFX" instr_count=%d\n", 
 			block_cnt, tag, mc.esp, instr_count);
 
 	return DR_EMIT_DEFAULT;
@@ -1825,9 +1832,6 @@ event_bb_insert(void *drcontext, void *tag, instrlist_t *bb,
 	shared_data *sd = (shared_data *) user_data;
 	int& insert_count = sd->insert_count;
 	app_pc pc = instr_get_app_pc(instr);
-	//thread_data* data = (thread_data*)drmgr_get_tls_field(drcontext, tls_index);
-	//dr_fprintf(data->f, "(tag="PFX") pc="PFX"\n", tag, pc);
-	//return DR_EMIT_DEFAULT;	
 	
 	if(pc == 0 || sd->skip == 1 || insert_count >= MAX_CLEAN_INSTR_COUNT)
 		return DR_EMIT_DEFAULT;
@@ -1865,7 +1869,6 @@ event_bb_instru2instru(void *drcontext, void *tag, instrlist_t *bb,
                               bool for_trace, bool translating, void *user_data)
 {
 	shared_data *sd = (shared_data *) user_data;
-	dr_thread_free(drcontext, sd, sizeof(*sd));
 	return DR_EMIT_DEFAULT;
 }
 #endif
@@ -1903,7 +1906,7 @@ event_module_load(void *drcontext, const module_data_t *info, bool loaded)
 	bool is_libc, is_libcpp, is_debug;
     module_is_libc(info, &is_libc, &is_libcpp, &is_debug);
 
-	dr_fprintf(f_global, "\nmodule load event: \"%s\" "PFX"-"PFX" %s\n",
+	LOG_MAIN(f_global, "\nmodule load event: \"%s\" "PFX"-"PFX" %s\n",
 		name, info->start, info->end, info->full_path);
 
 	if (name != NULL && 
@@ -1928,7 +1931,7 @@ event_module_load(void *drcontext, const module_data_t *info, bool loaded)
 					e->function = _strdup(rules[i].function);
 					memcpy(&e->rule, &rules[i], sizeof(rules[i]));
 					hashtable_add(&call_routine_table, (void *)pc, (void *)e);
-					dr_fprintf(f_global, "%s!%s "PFX"\n", name, rules[i].function, pc);
+					LOG_MAIN(f_global, "%s!%s "PFX"\n", name, rules[i].function, pc);
 			}
 		}
 	}
@@ -1940,14 +1943,14 @@ event_module_load(void *drcontext, const module_data_t *info, bool loaded)
 	{
 		if(text_matches_any_pattern(name, black_dll[i], true))
 		{
-			dr_fprintf(f_global, "couldnot skip this module\n");
+			LOG_MAIN(f_global, "couldnot skip this module\n");
 			return;
 		}
 	}
 
 	if(text_matches_any_pattern(info->full_path, whitelist_lib, true))
 	{
-		dr_fprintf(f_global, "lib_whitelist module %s\n", info->names.module_name);
+		LOG_MAIN(f_global, "lib_whitelist module %s\n", info->names.module_name);
 		skip_list.insert(range(info->start, info->end));
 	}
 	else
@@ -1956,7 +1959,7 @@ event_module_load(void *drcontext, const module_data_t *info, bool loaded)
 		{
 			if(_stricmp(white_dll[i], name) == 0)
 			{
-				dr_fprintf(f_global, "whitelist module %s\n", name);
+				LOG_MAIN(f_global, "whitelist module %s\n", name);
 				skip_list.insert(range(info->start, info->end));
 				break;
 			}
@@ -1980,8 +1983,8 @@ event_thread_init(void *drcontext)
 	TEB* teb = get_TEB_from_tid(id);
 	data->stack_bottom = (app_pc)teb->StackBase;
 	data->stack_top = (app_pc)teb->StackLimit;
-	dr_fprintf(f_global, "stack is "PFX"-"PFX"\n", data->stack_bottom, data->stack_top);
-	dr_fprintf(f, "stack is "PFX"-"PFX"\n", data->stack_bottom, data->stack_top);
+	LOG_MAIN(f_global, "stack is "PFX"-"PFX"\n", data->stack_bottom, data->stack_top);
+	LOG_MAIN(f, "stack is "PFX"-"PFX"\n", data->stack_bottom, data->stack_top);
 #else
 	data->stack_bottom = 0;
 	data->stack_top = 0;
@@ -2011,10 +2014,10 @@ event_thread_exit(void *drcontext)
 		static char buffer[MAX_SHOW_BINARY_MEMORY*3+1];
 		int n = it->end-it->start;
 		mem_disassemble_to_buffer(buffer, n, (byte*)it->start);
-		dr_fprintf(f, PFX"-"PFX"[%d]: %s\n", it->start, it->end, n, buffer);
+		LOG_MAIN(f, PFX"-"PFX"[%d]: %s\n", it->start, it->end, n, buffer);
 	}
 
-	dr_fprintf(f, "---- log end for thread %d ----\n", data->thread_id);
+	LOG_MAIN(f, "---- log end for thread %d ----\n", data->thread_id);
 	close_file(f);
 
 	delete data;
@@ -2033,11 +2036,11 @@ event_exit(void)
 	dr_mutex_destroy(stats_mutex);
 	dr_mutex_destroy(memory_mutex);
 
-	dr_fprintf(f_global, "\n\n====== heap memory ======\n");
+	LOG_MAIN(f_global, "\n\n====== heap memory ======\n");
 	for(memory_list::iterator it = process_heap.begin();it != process_heap.end(); it++)
-		dr_fprintf(f_global, PFX"-"PFX" Size:%d\n", it->start, it->end, it->end-it->start);
+		LOG_MAIN(f_global, PFX"-"PFX" Size:%d\n", it->start, it->end, it->end-it->start);
 	
-	dr_fprintf(f_global, "====== log end ======\n");
+	LOG_MAIN(f_global, "====== log end ======\n");
 	close_file(f_global);
 }
 
@@ -2072,9 +2075,9 @@ dr_init(client_id_t id)
 
 	create_f_globalfile(logsubdir);
 
-	dr_fprintf(f_global, "options are \"%s\"\n", opstr);
-	dr_fprintf(f_global, "executable \"%s\" is "PFX"-"PFX"\n", app_path, app_base, app_end);
-	dr_fprintf(f_global, "verbose is "PFX"\n", verbose);
+	LOG_MAIN(f_global, "options are \"%s\"\n", opstr);
+	LOG_MAIN(f_global, "executable \"%s\" is "PFX"-"PFX"\n", app_path, app_base, app_end);
+	LOG_MAIN(f_global, "verbose is "PFX"\n", verbose);
 
 #ifdef USE_DRMGR
 	drmgr_init();
@@ -2112,7 +2115,7 @@ dr_init(client_id_t id)
 	if(data)
 	{
 		ntdll_base = data->start;
-		dr_fprintf(f_global, "ntdll_base is "PFX"\n", ntdll_base);
+		LOG_MAIN(f_global, "ntdll_base is "PFX"\n", ntdll_base);
 	}
 #endif
 	replace_init();
